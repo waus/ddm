@@ -1,0 +1,28 @@
+app-id: app.waus.ddm
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: DDM
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=network
+modules:
+  - name: ddm
+    buildsystem: simple
+    build-commands:
+      - install -d /app/ddm /app/bin /app/share/applications /app/share/icons/hicolor/512x512/apps
+      - cp -a bundle/. /app/ddm/
+      - ln -s /app/ddm/DDM /app/bin/DDM
+      - install -Dm644 app.waus.ddm.desktop /app/share/applications/app.waus.ddm.desktop
+      - install -Dm644 app.waus.ddm.png /app/share/icons/hicolor/512x512/apps/app.waus.ddm.png
+    sources:
+      - type: dir
+        path: build/linux/x64/release/bundle
+        dest: bundle
+      - type: file
+        path: linux/packaging/app.waus.ddm.desktop
+      - type: file
+        path: build/linux/packaging/app.waus.ddm.png

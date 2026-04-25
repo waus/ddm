@@ -1,0 +1,41 @@
+name: ddm_proto_dart
+description: DDM protocol and codec compatibility package.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  cbor: ^6.3.6
+  cryptography: ^2.7.0
+  crypto: ^3.0.3
+  dage: ^1.0.10
+  dcid: ^1.0.0
+  sqlite3: ^2.9.3
+  vdfrsa:
+    git:
+      url: https://github.com/waus/vdf
+      ref: v0.3.4
+  dart_libp2p:
+    git:
+      url: https://github.com/waus/dart_libp2p
+      ref: v1.0.4
+  dart_libp2p_kad_dht:
+    git:
+      url: https://github.com/waus/dart_libp2p_kad_dht
+      ref: v1.2.1
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0
+
+dependency_overrides:
+  dart_libp2p:
+    git:
+      url: https://github.com/waus/dart_libp2p
+      ref: v1.0.4
+  dart_libp2p_kad_dht:
+    git:
+      url: https://github.com/waus/dart_libp2p_kad_dht
+      ref: v1.2.1

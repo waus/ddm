@@ -1,0 +1,20 @@
+// Application-level settings for the Runner target.
+//
+// This may be replaced with something auto-generated from metadata (e.g., pubspec.yaml) in the
+// future. If not, the values below would default to using the project name when this becomes a
+// 'flutter create' template.
+
+// The application's name. By default this is also the title of the Flutter window.
+PRODUCT_NAME = DDM
+
+// The application's bundle identifier
+PRODUCT_BUNDLE_IDENTIFIER = app.waus.ddm
+
+// The copyright displayed in application information
+PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+
+// This project targets Apple Silicon macOS builds only. The vdfrsa native
+// backend links against Homebrew OpenSSL from /opt/homebrew, which is arm64.
+ARCHS = arm64
+EXCLUDED_ARCHS[sdk=macosx*] = x86_64
+ONLY_ACTIVE_ARCH = YES

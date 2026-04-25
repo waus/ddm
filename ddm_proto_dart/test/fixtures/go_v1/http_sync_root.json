@@ -1,0 +1,29 @@
+{
+  "root": {
+    "hash": "03193b3e3d4657d9a42ae64cd5096ee66994345e5cd53b9f3c9c87d44e0c24d6",
+    "branch": {
+      "prefix": "a3",
+      "children_count": 2,
+      "min_ttl": 7200,
+      "max_ttl": 7800,
+      "children_ids": [
+        null,
+        null,
+        null,
+        "cfe6cdbfdf1c962c86f93f4ce44875168da706ef3bcecc5d84855c8e0c9d5c2f",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "4da288a93afb94f0f0cbb3bc99b5da929724a866de81fa6b008fc73b80114859",
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  }
+}

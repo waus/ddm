@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DDM
+Comment=DDM Flutter client
+Exec=DDM
+Icon=app.waus.ddm
+Terminal=false
+Categories=Network;Utility;

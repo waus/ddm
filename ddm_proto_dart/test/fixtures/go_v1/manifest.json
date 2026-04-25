@@ -1,0 +1,27 @@
+{
+  "generator": "go/cmd/gen-golden-fixtures",
+  "schema": "go-v1-foundation",
+  "generated_utc": "2026-04-21T21:31:30Z",
+  "files_sha256_hex": {
+    "address.cbor": "ec17bfd2fd4981197b437a2e9b22a128671b926c8f84d3cc4cf5e5eca997a734",
+    "compat_inputs.json": "758b6ae4b1bfd8f7c4d984a1cb570e74c6f7b2ae2962c0ec7677fa51b516bbe3",
+    "config_record.json": "5e5e78b343f277904644ba3c36a5e4e64ff8ff4793f355f8285f943a5d29f7b8",
+    "encrypted_message.cbor": "ced5662fec4fb80623701d7920db36149cd7035bb624fca97b9e6c2e25b52742",
+    "http_sync_configs.json": "d15638e72066a12cd6a2a7d03a75e490bfad36201b42145c06b3274f8de17824",
+    "http_sync_lookup.json": "545877d2f9983588365a99467353c8584821e57b966d69116344767b9c559cf2",
+    "http_sync_node.json": "441d1778ac7ed8a19c69fd09f5206522daf6b7ee5562c1907d3cf01beee9120f",
+    "http_sync_root.json": "32e6f60beb2420643b320117cb970cf30fd73be841bc743e6d34236fec9263ad",
+    "message_index_branch.cbor": "2cbaeed20f9ddf2fae60ba7bceec638ab6da979c0e29de15303befad619770f6",
+    "message_index_ids.json": "1a5fa6e6ca67f04cd1edcd58c2e2cc24663adf2cdfee253bf1ec3243d9247fe0",
+    "message_index_leaf.cbor": "8becc316db61445ba3193c8abeaa51d9a513688822e08674fc109878ca741c3c",
+    "p2p_get_node_request.frame": "56c95fe3ede2b9a0f0fe24721cb03dc633fb05c9fb944874c3956fa2d562086f",
+    "p2p_get_node_response.frame": "1e0fd4b4f8942309d7b3b10643ddc47a0c1daaba37e62c0ce20d8e82cd00dbff",
+    "p2p_get_sync_blobs_request.frame": "ddb866a7da8998fbee7eb64ea0294da54c21a96350dd0ab3649551f92728cfba",
+    "p2p_get_sync_blobs_response.frame": "49b51cc25867773ebf8dbe1673c22911ef55aaf7ad86c474f4fc062c7d97abf7",
+    "plaintext_message.cbor": "631603e381629c38f70598dc3b108fe6a7e19bd9ed4592a2dc954156bfdca4c0",
+    "pow_envelope.cbor": "b6fee739ded8d8280aad2b0b7d482987cea39998c92077dd24bb5dc8a6c5e841",
+    "sync_blob.json": "5e9433f23aa92c7d59bf5c9498e0ca73782dcbd82b8b41b376e5bf8fd46b6d78"
+  },
+  "compat_doc": "ddm_proto_dart/docs/foundation-interop.md",
+  "fixture_doc": "ddm_proto_dart/test/fixtures/go_v1/README.md"
+}

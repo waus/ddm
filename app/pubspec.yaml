@@ -1,0 +1,55 @@
+name: ddm_app
+description: Flutter client shell for DDM.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  battery_plus: ^7.0.0
+  flutter:
+    sdk: flutter
+  ddm_proto_dart:
+    path: ../ddm_proto_dart
+  flutter_riverpod: ^2.6.1
+  path_provider: ^2.1.5
+  pretty_qr_code: ^3.6.0
+  shared_preferences: ^2.5.5
+  sqlite3_flutter_libs: ^0.5.40
+  window_manager: ^0.5.1
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
+  flutter_test:
+    sdk: flutter
+  lints: ^5.0.0
+
+dependency_overrides:
+  dart_libp2p:
+    git:
+      url: https://github.com/waus/dart_libp2p
+      ref: v1.0.4
+  dart_libp2p_kad_dht:
+    git:
+      url: https://github.com/waus/dart_libp2p_kad_dht
+      ref: v1.2.1
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  image_path: logo.png
+  android: true
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: logo.png
+  adaptive_icon_foreground_inset: 0
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: logo.png
+  windows:
+    generate: true
+    image_path: logo.png
+    icon_size: 256
