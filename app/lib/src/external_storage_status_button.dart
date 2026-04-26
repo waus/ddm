@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'app_theme.dart';
+
 final class ExternalStorageStatusButton extends StatefulWidget {
   const ExternalStorageStatusButton({
     required this.count,
@@ -40,6 +42,7 @@ final class _ExternalStorageStatusButtonState
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final borderRadius = appShapesOf(context).buttonBorderRadius;
     return Tooltip(
       message: widget.count == 1
           ? 'External sync file detected'
@@ -58,7 +61,7 @@ final class _ExternalStorageStatusButtonState
           return DecoratedBox(
             decoration: BoxDecoration(
               color: backgroundColor,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: borderRadius,
               border: Border.all(
                 color: colorScheme.tertiary.withValues(alpha: _pulse.value),
               ),

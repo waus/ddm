@@ -2,6 +2,8 @@ import Cocoa
 import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
+  private var appMenuChannel: FlutterMethodChannel?
+
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -9,6 +11,12 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    let appMenuChannel = FlutterMethodChannel(
+      name: "ddm/app_menu",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    self.appMenuChannel = appMenuChannel
+    installMessageMenuItem()
+
     let filePickerChannel = FlutterMethodChannel(
       name: "ddm/file_picker",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -31,6 +39,39 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+  }
+
+  private func installMessageMenuItem() {
+    guard let mainMenu = NSApplication.shared.mainMenu else {
+      return
+    }
+
+    let messageMenu: NSMenu
+    if let existing = mainMenu.item(withTitle: "Message") {
+      messageMenu = existing.submenu ?? NSMenu(title: "Message")
+      existing.submenu = messageMenu
+    } else {
+      messageMenu = NSMenu(title: "Message")
+      let messageMenuItem = NSMenuItem(title: "Message", action: nil, keyEquivalent: "")
+      messageMenuItem.submenu = messageMenu
+      mainMenu.insertItem(messageMenuItem, at: min(1, mainMenu.numberOfItems))
+    }
+
+    if messageMenu.items.contains(where: { $0.action == #selector(newMessageMenuItemSelected(_:)) }) {
+      return
+    }
+
+    let newMessageItem = NSMenuItem(
+      title: "New Message",
+      action: #selector(newMessageMenuItemSelected(_:)),
+      keyEquivalent: "n")
+    newMessageItem.keyEquivalentModifierMask = [.command]
+    newMessageItem.target = self
+    messageMenu.addItem(newMessageItem)
+  }
+
+  @objc private func newMessageMenuItemSelected(_ sender: Any?) {
+    appMenuChannel?.invokeMethod("newMessage", arguments: nil)
   }
 
   private func pickExternalStorageSyncFile(

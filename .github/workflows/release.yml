@@ -25,6 +25,28 @@ jobs:
         with:
           channel: stable
           cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - name: Configure Android NDK for Rust
+        run: |
+          ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+          if [ -z "$ndk_root" ] || [ ! -d "$ndk_root" ]; then
+            ndk_root="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -n "$ndk_root"
+          ndk_bin="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -d "$ndk_bin"
+          android_api=21
+          test -x "$ndk_bin/aarch64-linux-android${android_api}-clang"
+          test -x "$ndk_bin/armv7a-linux-androideabi${android_api}-clang"
+          test -x "$ndk_bin/x86_64-linux-android${android_api}-clang"
+          echo "ANDROID_NDK_HOME=$ndk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk_root" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk_bin/aarch64-linux-android${android_api}-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$ndk_bin/armv7a-linux-androideabi${android_api}-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$ndk_bin/x86_64-linux-android${android_api}-clang" >> "$GITHUB_ENV"
+          echo "$ndk_bin" >> "$GITHUB_PATH"
       - name: Install dependencies
         run: flutter pub get
       - name: Build release APKs
@@ -55,6 +77,7 @@ jobs:
         with:
           channel: stable
           cache: true
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
@@ -125,6 +148,9 @@ jobs:
         with:
           channel: stable
           cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - name: Install dependencies
         run: flutter pub get
       - name: Build macOS release
@@ -154,115 +180,18 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Install Windows build dependencies
-        run: |
-          $ErrorActionPreference = 'Stop'
-          choco install openssl -y --no-progress
-
-          $opensslCommand = Get-Command openssl.exe -ErrorAction SilentlyContinue
-          $candidateRoots = @()
-          if ($opensslCommand) {
-            $candidateRoots += Split-Path -Parent (Split-Path -Parent $opensslCommand.Source)
-          }
-          $candidateRoots += @(
-            "$env:ProgramFiles\OpenSSL-Win64",
-            "$env:ProgramFiles\OpenSSL",
-            "${env:ProgramFiles(x86)}\OpenSSL-Win64",
-            "${env:ProgramFiles(x86)}\OpenSSL",
-            'C:\OpenSSL-Win64',
-            'C:\OpenSSL',
-            'C:\tools\OpenSSL-Win64',
-            'C:\tools\OpenSSL'
-          )
-
-          $opensslRoot = $candidateRoots |
-            Where-Object { $_ -and (Test-Path (Join-Path $_ 'include\openssl\bn.h')) } |
-            Select-Object -First 1
-          if (-not $opensslRoot) {
-            throw "OpenSSL headers were not found. Checked: $($candidateRoots -join ', ')"
-          }
-
-          $includeDir = Join-Path $opensslRoot 'include'
-          $cryptoLib = Get-ChildItem -Path (Join-Path $opensslRoot 'lib') -Filter libcrypto.lib -Recurse | Select-Object -First 1
-          $cryptoDll = Get-ChildItem -Path (Join-Path $opensslRoot 'bin') -Filter 'libcrypto*.dll' | Select-Object -First 1
-          if (-not $cryptoLib) {
-            throw 'OpenSSL libcrypto import library was not installed.'
-          }
-          if (-not $cryptoDll) {
-            throw 'OpenSSL libcrypto runtime DLL was not installed.'
-          }
-
-          $pkgConfigDir = Resolve-Path (New-Item -ItemType Directory -Force ..\build\pkgconfig)
-          $compatOpenSslRoot = Resolve-Path (New-Item -ItemType Directory -Force ..\build\openssl-root)
-          $compatIncludeDir = Resolve-Path (New-Item -ItemType Directory -Force (Join-Path $compatOpenSslRoot.Path 'include'))
-          $compatOpenSslIncludeDir = Resolve-Path (New-Item -ItemType Directory -Force (Join-Path $compatIncludeDir.Path 'openssl'))
-          $compatLibDir = Resolve-Path (New-Item -ItemType Directory -Force (Join-Path $compatOpenSslRoot.Path 'lib'))
-          Copy-Item (Join-Path $includeDir 'openssl\*') $compatOpenSslIncludeDir.Path -Recurse -Force
-          Copy-Item $cryptoLib.FullName (Join-Path $compatLibDir.Path 'libcrypto.lib') -Force
-          Copy-Item $cryptoLib.FullName (Join-Path $compatLibDir.Path 'crypto.lib') -Force
-          if (-not (Test-Path (Join-Path $compatOpenSslRoot.Path 'include\openssl\bn.h'))) {
-            throw 'Staged OpenSSL headers are incomplete.'
-          }
-          if (-not (Test-Path (Join-Path $compatOpenSslRoot.Path 'lib\libcrypto.lib'))) {
-            throw 'Staged OpenSSL import library is missing.'
-          }
-
-          $pcIncludeDir = ($compatIncludeDir.Path -replace '\\', '/')
-          $pcLibDir = ($compatLibDir.Path -replace '\\', '/')
-          @(
-            'Name: OpenSSL',
-            'Description: OpenSSL crypto library',
-            'Version: 3',
-            "Libs: -L`"$pcLibDir`" -lcrypto",
-            "Cflags: /I`"$pcIncludeDir`""
-          ) | Set-Content -Encoding ASCII (Join-Path $pkgConfigDir.Path 'openssl.pc')
-
-          $ciBinDir = Resolve-Path (New-Item -ItemType Directory -Force ..\build\ci-bin)
-          @(
-            '@echo off',
-            "echo /I`"$pcIncludeDir`" -L`"$pcLibDir`" -lcrypto"
-          ) | Set-Content -Encoding ASCII (Join-Path $ciBinDir.Path 'pkg-config.bat')
-          @(
-            '@echo off',
-            "echo /I`"$pcIncludeDir`" -L`"$pcLibDir`" -lcrypto"
-          ) | Set-Content -Encoding ASCII (Join-Path $ciBinDir.Path 'pkg-config.cmd')
-
-          $env:PKG_CONFIG_PATH = $pkgConfigDir.Path
-          $env:Path = "$($ciBinDir.Path);$env:Path"
-          Get-Command pkg-config
-          pkg-config --cflags --libs openssl
-
-          "OPENSSL_ROOT=$($compatOpenSslRoot.Path)" >> $env:GITHUB_ENV
-          "OPENSSL_BIN=$($cryptoDll.DirectoryName)" >> $env:GITHUB_ENV
-          "PKG_CONFIG_PATH=$($pkgConfigDir.Path)" >> $env:GITHUB_ENV
-          $cryptoDll.DirectoryName >> $env:GITHUB_PATH
-          $ciBinDir.Path >> $env:GITHUB_PATH
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
       - name: Install dependencies
         run: flutter pub get
-      - name: Verify VDF dependency
-        run: |
-          $vdfLock = Get-Content pubspec.lock -Raw
-          if ($vdfLock -notmatch 'ref: "v0\.3\.4"') {
-            throw 'vdfrsa dependency did not resolve to v0.3.4.'
-          }
-          if ($vdfLock -notmatch 'resolved-ref: e7af30f7df0319c4b39f4c6666d68a043225c0a6') {
-            throw 'vdfrsa dependency did not resolve to the expected commit.'
-          }
-          $vdfLockEntry = Select-String -Path pubspec.lock -Pattern 'vdfrsa' -Context 0,8
-          if (-not $vdfLockEntry) {
-            throw 'vdfrsa dependency was not found in pubspec.lock.'
-          }
-          $vdfLockEntry
       - name: Build Windows release
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          Test-Path "$env:OPENSSL_ROOT\include\openssl\bn.h"
-          Test-Path "$env:OPENSSL_ROOT\lib\libcrypto.lib"
-          Get-Command pkg-config
-          pkg-config --cflags --libs openssl
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           $buildLog = '..\build\windows-build.log'
+          New-Item -ItemType Directory -Force (Split-Path $buildLog)
           flutter build windows --release --build-name $version --build-number "${{ github.run_number }}" --verbose *> $buildLog
           $exitCode = $LASTEXITCODE
           Get-Content $buildLog -Tail 300
@@ -278,7 +207,20 @@ jobs:
       - name: Package artifact
         run: |
           Test-Path build\windows\x64\runner\Release\DDM.exe
-          Copy-Item "$env:OPENSSL_BIN\libcrypto*.dll" build\windows\x64\runner\Release\
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsRoot) {
+            throw 'Visual Studio with MSVC tools was not found.'
+          }
+          $crtDir = Get-ChildItem -Path (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
+            Where-Object { Test-Path (Join-Path $_ 'vcruntime140.dll') } |
+            Select-Object -First 1
+          if (-not $crtDir) {
+            throw 'MSVC x64 runtime redistributable directory was not found.'
+          }
+          Copy-Item (Join-Path $crtDir '*.dll') build\windows\x64\runner\Release\ -Force
           New-Item -ItemType Directory -Force ..\dist
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "..\dist\ddm-windows-x64-$env:GITHUB_REF_NAME.zip" -Force
       - uses: actions/upload-artifact@v4

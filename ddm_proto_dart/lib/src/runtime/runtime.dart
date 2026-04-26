@@ -156,8 +156,6 @@ final class DdmCore {
       storage: storage,
       nowUtc: now,
       randomBytes: bytes,
-      ttlJitterDraw: ttlDraw,
-      expiresJitterDraw: expiresDraw,
     );
     final receive = ReceiveService(storage: storage, nowUtc: now);
     final sync = SyncService(
@@ -202,6 +200,7 @@ final class DdmCore {
 
   void close() {
     transports.close();
+    sync.close();
     _storage.close();
   }
 }
@@ -567,19 +566,13 @@ final class MessagingService {
     required DdmSqliteStorage storage,
     required UtcNow nowUtc,
     required RandomBytes randomBytes,
-    required DurationJitterDraw ttlJitterDraw,
-    required DurationJitterDraw expiresJitterDraw,
   })  : _storage = storage,
         _nowUtc = nowUtc,
-        _randomBytes = randomBytes,
-        _ttlJitterDraw = ttlJitterDraw,
-        _expiresJitterDraw = expiresJitterDraw;
+        _randomBytes = randomBytes;
 
   final DdmSqliteStorage _storage;
   final UtcNow _nowUtc;
   final RandomBytes _randomBytes;
-  final DurationJitterDraw _ttlJitterDraw;
-  final DurationJitterDraw _expiresJitterDraw;
 
   MessageRecord sendTextMessage({
     required AccountRecord sender,
@@ -652,18 +645,12 @@ final class MessagingService {
       throw const FormatException('sender address not found in local db');
     }
 
-    final jittered = deriveJitteredTTLsWith(
-      ttl,
-      ttlDraw: _ttlJitterDraw,
-      expiresDraw: _expiresJitterDraw,
-    );
-    var powTTLSeconds = jittered.powTTL.inSeconds;
-    if (powTTLSeconds <= 0) {
-      powTTLSeconds = 1;
-    }
-
     final createdAt = _nowUtc().toUtc();
-    final expiresAt = createdAt.add(jittered.expiresTTL);
+    var ttlSeconds = ttl.inSeconds;
+    if (ttlSeconds <= 0) {
+      ttlSeconds = 1;
+    }
+    final expiresAt = createdAt.add(Duration(seconds: ttlSeconds));
     final recipientAddress = recipient.toText();
     final id = _generateMessageId(
       sender: localSender.address,
@@ -676,12 +663,14 @@ final class MessagingService {
       senderAddress: localSender.address,
       recipientAddress: recipientAddress,
       createdAt: createdAt,
+      updatedAt: createdAt,
       expiresAt: expiresAt,
       isRead: true,
-      ttlSeconds: powTTLSeconds,
+      ttlSeconds: ttlSeconds,
       payloadType: payloadType,
       payload: payload,
       state: messageStateCreated,
+      reliableDelivery: recipient.requiresAck,
       streamId: recipient.streamId(),
     );
     _storage.messages.insertMessage(localMessage);
@@ -764,6 +753,9 @@ final class ReceiveService {
     final messageId = MessageId(decrypted.messageId);
     final existing = _storage.messages.getMessageById(messageId);
     if (existing != null) {
+      if (decrypted.ackData.isNotEmpty) {
+        _storage.messages.markMessageReliableDelivery(messageId);
+      }
       await _publishEmbeddedAckForStoredMessage(
         decrypted.ackData,
         stored: existing,
@@ -775,11 +767,13 @@ final class ReceiveService {
     }
 
     final receivedAt = _nowUtc().toUtc();
+    final recipientAddress = Address.fromText(localRecipient.address);
     final inbound = MessageRecord(
       id: messageId,
       senderAddress: decrypted.sender.toText(),
       recipientAddress: localRecipient.address,
       createdAt: receivedAt,
+      updatedAt: receivedAt,
       expiresAt: DateTime.fromMillisecondsSinceEpoch(
         encrypted.expiresTime * 1000,
         isUtc: true,
@@ -789,6 +783,8 @@ final class ReceiveService {
       payloadType: decrypted.messageType,
       payload: decrypted.message,
       state: messageStateReceived,
+      reliableDelivery:
+          decrypted.ackData.isNotEmpty || recipientAddress.requiresAck,
       streamId: encrypted.streamNumber,
     );
     _storage.messages.insertMessage(inbound);
@@ -816,6 +812,7 @@ final class ReceiveService {
         ackedMessage.senderAddress != localRecipient.address) {
       return;
     }
+    _storage.messages.markMessageReliableDelivery(ackedMessageId);
     _storage.messages.updateMessageState(
       ackedMessageId,
       messageStateDelivered,
@@ -908,6 +905,10 @@ final class OutboxService {
     return _storage.messages.listMessagesByState(messageStateCreated);
   }
 
+  List<MessageRecord> listExpiredReliableDeliveryMessages(DateTime now) {
+    return _storage.messages.listExpiredReliablePowSyncedMessages(now);
+  }
+
   Future<List<PublishedOutboxMessage>> publishPendingMessages({
     required ConfigV1Core activeConfig,
     required PowService pow,
@@ -942,6 +943,59 @@ final class OutboxService {
         'message ${message.id.toHex()} is ${message.state}, want $messageStateCreated',
       );
     }
+    return _publishStoredMessage(
+      message,
+      activeConfig: activeConfig,
+      pow: pow,
+      encrypt: encrypt,
+      onPowProgress: onPowProgress,
+    );
+  }
+
+  Future<List<PublishedOutboxMessage>> retryExpiredReliableDelivery({
+    required DateTime now,
+    required ConfigV1Core activeConfig,
+    required PowService pow,
+    RecipientPayloadEncryptor encrypt = encryptForRecipientWithDage,
+    void Function(PowSolveProgress progress)? onPowProgress,
+  }) async {
+    final out = <PublishedOutboxMessage>[];
+    for (final message in listExpiredReliableDeliveryMessages(now)) {
+      try {
+        out.add(
+          await _publishStoredMessage(
+            message,
+            activeConfig: activeConfig,
+            pow: pow,
+            encrypt: encrypt,
+            onPowProgress: onPowProgress,
+          ),
+        );
+      } catch (error) {
+        stderr.writeln(
+          '${DateTime.now().toIso8601String()} [ddm:runtime] '
+          'reliable delivery retry failed message_id=${message.id.toHex()} '
+          'error=$error',
+        );
+      }
+    }
+    return out;
+  }
+
+  Future<PublishedOutboxMessage> _publishStoredMessage(
+    MessageRecord message, {
+    required ConfigV1Core activeConfig,
+    required PowService pow,
+    required RecipientPayloadEncryptor encrypt,
+    required void Function(PowSolveProgress progress)? onPowProgress,
+  }) async {
+    if (message.state != messageStateCreated &&
+        message.state != messageStatePowSynced) {
+      throw FormatException(
+        'message ${message.id.toHex()} is ${message.state}, '
+        'want $messageStateCreated or $messageStatePowSynced',
+      );
+    }
 
     final senderAddress = Address.fromText(message.senderAddress);
     final recipientAddress = Address.fromText(message.recipientAddress);
@@ -953,13 +1007,18 @@ final class OutboxService {
         'sender account ${senderAddress.toText()} not found in local db',
       );
     }
+    final publishNow = _nowUtc().toUtc();
+    final publishTTL = _deriveMessagePublishTTL(
+      now: publishNow,
+      baseTTLSeconds: message.ttlSeconds,
+    );
 
     Uint8List? ackData;
     if (recipientAddress.requiresAck) {
       final ackTTL = deriveAckJitteredTTLWith(
-        createdAt: message.createdAt,
-        baseTTLSeconds: message.ttlSeconds,
-        baseExpiresAt: message.expiresAt,
+        createdAt: publishNow,
+        baseTTLSeconds: publishTTL.ttlSeconds,
+        baseExpiresAt: publishTTL.expiresAt,
         ttlDraw: _ttlJitterDraw,
         expiresDraw: _expiresJitterDraw,
       );
@@ -1003,18 +1062,25 @@ final class OutboxService {
       messageType: message.payloadType,
       message: message.payload,
       ackData: ackData,
-      ttlSeconds: message.ttlSeconds,
-      expiresAt: message.expiresAt,
+      ttlSeconds: publishTTL.ttlSeconds,
+      expiresAt: publishTTL.expiresAt,
       onPowProgress: onPowProgress,
     );
     final record = _storePreparedBlob(
       blobPayload: payload.payload,
       recipientStreamId: recipientAddress.streamId(),
-      expiresAt: message.expiresAt,
+      expiresAt: publishTTL.expiresAt,
       difficulty: payload.difficulty,
       powElapsed: payload.powElapsed,
     );
-    _storage.messages.updateMessageState(message.id, messageStatePowSynced);
+    _storage.messages.updateMessageExpiry(
+      message.id,
+      expiresAt: publishTTL.expiresAt,
+      updatedAt: _nowUtc().toUtc(),
+    );
+    if (message.state != messageStatePowSynced) {
+      _storage.messages.updateMessageState(message.id, messageStatePowSynced);
+    }
     return PublishedOutboxMessage(
       message: _requireMessage(message.id),
       syncBlob: record.syncBlob,
@@ -1125,6 +1191,29 @@ final class OutboxService {
       throw FormatException('message ${messageId.toHex()} not found');
     }
     return message;
+  }
+
+  ({int ttlSeconds, DateTime expiresAt}) _deriveMessagePublishTTL({
+    required DateTime now,
+    required int baseTTLSeconds,
+  }) {
+    var baseTTL = Duration(seconds: baseTTLSeconds);
+    if (baseTTL <= Duration.zero) {
+      baseTTL = const Duration(seconds: 1);
+    }
+    final jittered = deriveJitteredTTLsWith(
+      baseTTL,
+      ttlDraw: _ttlJitterDraw,
+      expiresDraw: _expiresJitterDraw,
+    );
+    var ttlSeconds = jittered.powTTL.inSeconds;
+    if (ttlSeconds <= 0) {
+      ttlSeconds = 1;
+    }
+    return (
+      ttlSeconds: ttlSeconds,
+      expiresAt: now.toUtc().add(jittered.expiresTTL),
+    );
   }
 
   Future<_PreparedPowEnvelopePayload> _buildPowEnvelopePayload({

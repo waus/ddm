@@ -37,7 +37,7 @@ void main() {
     );
   });
 
-  test('send text persists local outbound message with jittered ttl', () async {
+  test('send text persists local outbound message with base ttl', () async {
     final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
     final core = _openCore(
       nowUtc: () => now,
@@ -58,15 +58,17 @@ void main() {
     expect(message.senderAddress, alice.address);
     expect(message.recipientAddress, bob.address);
     expect(message.createdAt, now);
-    expect(message.ttlSeconds, 110);
+    expect(message.ttlSeconds, 100);
     expect(
       message.expiresAt,
-      now.add(const Duration(milliseconds: 102500)),
+      now.add(const Duration(seconds: 100)),
     );
     expect(message.payloadType, MessageType.plain);
     expect(String.fromCharCodes(message.payload), 'hello bob');
     expect(message.isRead, isTrue);
     expect(message.state, messageStateCreated);
+    expect(message.updatedAt, message.createdAt);
+    expect(message.reliableDelivery, isFalse);
     expect(core.outbox.listPendingMessages().map((m) => m.id), [message.id]);
   });
 
@@ -163,6 +165,7 @@ void main() {
 
     final outbox = core.accounts.listMailboxMessages(alice, Mailbox.outbox);
     expect(outbox.single.state, messageStateDelivered);
+    expect(outbox.single.reliableDelivery, isTrue);
   });
 
   test('publish message stores PoW envelope sync blob and updates index',
@@ -239,6 +242,7 @@ void main() {
       text: 'hello bob',
       ttl: const Duration(seconds: 100),
     );
+    expect(message.reliableDelivery, isTrue);
     final pow = _RecordingPowService();
     final encryptor = _RecordingEncryptor();
 
@@ -284,6 +288,58 @@ void main() {
     expect(
       storedEncrypted.streamNumber.toUint32(),
       Address.fromText(bob.address).streamId().toUint32(),
+    );
+  });
+
+  test('retry expired reliable delivery republishes with refreshed expiry',
+      () async {
+    var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final core = _openCore(nowUtc: () => now);
+    addTearDown(core.close);
+
+    final alice = await core.accounts.createAccount('alice');
+    final bob = await core.accounts.createAccount(
+      'bob',
+      policy: addressPolicyAckExpected,
+    );
+    final message = core.messaging.sendTextMessage(
+      sender: alice,
+      recipient: Address.fromText(bob.address),
+      text: 'hello bob',
+      ttl: const Duration(hours: 1),
+    );
+    final pow = _RecordingPowService();
+    final encryptor = _RecordingEncryptor();
+
+    await core.outbox.publishMessage(
+      message.id,
+      activeConfig: core.config.loadActiveConfigCore(now),
+      pow: pow,
+      encrypt: encryptor.call,
+    );
+
+    now = DateTime.utc(2026, 4, 19, 12, 0, 0);
+    final retried = await core.outbox.retryExpiredReliableDelivery(
+      now: now,
+      activeConfig: core.config.loadActiveConfigCore(now),
+      pow: pow,
+      encrypt: encryptor.call,
+    );
+
+    expect(retried, hasLength(1));
+    expect(retried.single.message.id, message.id);
+    expect(retried.single.message.createdAt, message.createdAt);
+    expect(retried.single.message.updatedAt, now);
+    expect(retried.single.message.expiresAt, now.add(const Duration(hours: 1)));
+    expect(retried.single.message.state, messageStatePowSynced);
+    expect(pow.solves, hasLength(4));
+
+    final envelope = PowEnvelope.fromBytes(retried.single.syncBlob.blob);
+    final encrypted = EncryptedMessage.fromBytes(envelope.object);
+    expect(encrypted.ttl, 3600);
+    expect(
+      encrypted.expiresTime,
+      _unixSecondsForTest(now.add(const Duration(hours: 1))),
     );
   });
 
@@ -414,6 +470,7 @@ void main() {
     final inbox = aliceCore.accounts.listMailboxMessages(alice, Mailbox.inbox);
     expect(inbox, hasLength(1));
     expect(String.fromCharCodes(inbox.single.payload), 'hello acked alice');
+    expect(inbox.single.reliableDelivery, isTrue);
 
     expect(aliceCore.sync.totalSyncedMessages, 2);
 

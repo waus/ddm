@@ -7,7 +7,7 @@ import 'package:test/test.dart';
 
 void main() {
   test('BlobIndex adds blobs into compressed nibble tree', () {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
     final index = BlobIndex(nowUtc: () => now);
     final idA = SyncBlobId.parseHex(
       'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01',
@@ -69,6 +69,35 @@ void main() {
     final deleted = index.runGarbageCollection(now);
     expect(deleted, [id]);
     expect(storage.syncBlobs.getSyncBlobById(id), isNull);
+    expect(index.latestRoot().node.branch!.childrenCount, 0);
+  });
+
+  test('BlobIndex periodic garbage collection removes expired obsolete blobs',
+      () async {
+    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+
+    final id = SyncBlobId.parseHex('11' * syncBlobIdSize);
+    storage.syncBlobs.insertSyncBlob(
+      SyncBlobRecord(
+        blobId: id,
+        blob: Uint8List.fromList(<int>[1, 2, 3]),
+        source: syncBlobSourceLocal,
+        expiresAt: _unix(now),
+      ),
+    );
+
+    final index = BlobIndex(
+      nowUtc: () => now,
+      storage: storage,
+      rootRetention: Duration.zero,
+      garbageCollectionInterval: const Duration(milliseconds: 10),
+    );
+    addTearDown(index.close);
+    index.add(id, _unix(now));
+
+    await _waitUntil(() => storage.syncBlobs.getSyncBlobById(id) == null);
     expect(index.latestRoot().node.branch!.childrenCount, 0);
   });
 
@@ -437,6 +466,20 @@ RegisteredSource _registered(String id, double rating, DateTime lastOnlineAt) {
 }
 
 int _unix(DateTime value) => value.toUtc().millisecondsSinceEpoch ~/ 1000;
+
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 1),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('condition was not met within $timeout');
+}
 
 final class _MemorySyncSource implements SyncSource {
   _MemorySyncSource({

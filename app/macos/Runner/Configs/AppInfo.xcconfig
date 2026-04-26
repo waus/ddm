@@ -13,8 +13,7 @@ PRODUCT_BUNDLE_IDENTIFIER = app.waus.ddm
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
 
-// This project targets Apple Silicon macOS builds only. The vdfrsa native
-// backend links against Homebrew OpenSSL from /opt/homebrew, which is arm64.
+// This project targets Apple Silicon macOS builds only.
 ARCHS = arm64
 EXCLUDED_ARCHS[sdk=macosx*] = x86_64
 ONLY_ACTIVE_ARCH = YES

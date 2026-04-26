@@ -223,7 +223,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
   Future<List<String>> discoverPeers() async {
     final peers = _discoveryPool?.addresses() ?? const <String>[];
     if (peers.isNotEmpty) {
-      _p2pDebug('discover peers exported count=${peers.length}');
+      _p2pRpcDebug('discover peers exported count=${peers.length}');
     }
     return peers;
   }
@@ -820,13 +820,13 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     }
     final peer = _addrInfoFromUpstream(id);
     final startedAt = DateTime.now();
-    _p2pDebug(
+    _p2pRpcDebug(
       'rpc request begin method=${_rpcMethodName(request.method)} '
       'peer=${peer.id} addrs=${peer.addrs.map((addr) => addr.toString()).join(',')}',
     );
     try {
       await host.connect(peer, context: p2p_context.Context());
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc connect ok method=${_rpcMethodName(request.method)} '
         'peer=${peer.id} elapsed_ms=${DateTime.now().difference(startedAt).inMilliseconds}',
       );
@@ -847,7 +847,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
         <String>[p2pRpcProtocolId],
         p2p_context.Context(),
       );
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc stream opened method=${_rpcMethodName(request.method)} peer=${peer.id}',
       );
     } catch (error) {
@@ -862,13 +862,13 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     }
     try {
       final requestPayload = request.toBytes();
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc write frame method=${_rpcMethodName(request.method)} '
         'peer=${peer.id} bytes=${requestPayload.length}',
       );
       await _writeRpcFrame(stream, requestPayload);
       final responsePayload = await _readRpcFrame(stream);
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc read frame method=${_rpcMethodName(request.method)} '
         'peer=${peer.id} bytes=${responsePayload.length}',
       );
@@ -882,7 +882,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
         );
       }
       _throwIfRpcError(response);
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc request ok method=${_rpcMethodName(request.method)} '
         'peer=${peer.id} status=${response.status} '
         'elapsed_ms=${DateTime.now().difference(startedAt).inMilliseconds}',
@@ -912,7 +912,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     p2p_stream.P2PStream stream,
     p2p_peer.PeerId remotePeer,
   ) async {
-    _p2pDebug('rpc inbound stream remote_peer=$remotePeer');
+    _p2pRpcDebug('rpc inbound stream remote_peer=$remotePeer');
     final source = _source;
     if (source == null) {
       _p2pDebug('rpc inbound unavailable remote_peer=$remotePeer');
@@ -936,12 +936,12 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     try {
       final payload = await _readRpcFrame(stream);
       final request = RpcRequest.fromBytes(payload);
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc inbound request remote_peer=$remotePeer '
         'method=${_rpcMethodName(request.method)} bytes=${payload.length}',
       );
       final response = await _handleRpcRequest(source, request, remotePeer);
-      _p2pDebug(
+      _p2pRpcDebug(
         'rpc inbound response remote_peer=$remotePeer '
         'method=${_rpcMethodName(request.method)} status=${response.status}',
       );
@@ -1984,6 +1984,17 @@ void _p2pDebug(String message) {
   }
   stderr.writeln('${DateTime.now().toIso8601String()} [ddm:p2p] $message');
 }
+
+void _p2pRpcDebug(String message) {
+  if (!_verboseP2pRpcLogs) {
+    return;
+  }
+  _p2pDebug(message);
+}
+
+const bool _verboseP2pRpcLogs = bool.fromEnvironment(
+  'DDM_VERBOSE_P2P_RPC_LOGS',
+);
 
 const bool _isProductBuild = bool.fromEnvironment('dart.vm.product');
 

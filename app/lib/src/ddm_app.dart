@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 
 import 'app_controller.dart';
+import 'app_shortcuts.dart';
+import 'app_theme.dart';
 import 'desktop_layout.dart';
 import 'mobile_layout.dart';
 import 'theme_mode_toggle.dart';
@@ -118,22 +121,49 @@ final class DdmApp extends ConsumerWidget {
       title: 'DDM',
       debugShowCheckedModeBanner: false,
       themeMode: ref.watch(themeModeProvider),
-      theme: ThemeData(
-        colorScheme: lightColorScheme,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: darkColorScheme,
-      ),
+      theme: buildAppTheme(lightColorScheme),
+      darkTheme: buildAppTheme(darkColorScheme),
       home: const AppShell(),
     );
   }
 }
 
-final class AppShell extends ConsumerWidget {
+final class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+final class _AppShellState extends ConsumerState<AppShell> {
+  static const _appMenuChannel = MethodChannel('ddm/app_menu');
+
+  @override
+  void initState() {
+    super.initState();
+    _appMenuChannel.setMethodCallHandler(_handleAppMenuCall);
+  }
+
+  @override
+  void dispose() {
+    _appMenuChannel.setMethodCallHandler(null);
+    super.dispose();
+  }
+
+  Future<void> _handleAppMenuCall(MethodCall call) async {
+    if (call.method != 'newMessage') {
+      throw MissingPluginException(
+          'Unsupported app menu method ${call.method}');
+    }
+    final focusedContext = FocusManager.instance.primaryFocus?.context;
+    Actions.maybeInvoke(
+      focusedContext ?? context,
+      const NewMessageIntent(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     return LayoutBuilder(
       builder: (context, constraints) {

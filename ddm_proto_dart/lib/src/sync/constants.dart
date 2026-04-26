@@ -12,6 +12,7 @@ const double ratingReceivedSomethingStrange = 2.0;
 const int reverseSyncPushLimit = 5;
 
 const Duration blobStorageRootRetention = Duration(minutes: 10);
+const Duration blobStorageGcInterval = Duration(seconds: 5);
 const Duration sourceOnlineWindow = Duration(hours: 1);
 const Duration sourceOfflineStartup = Duration(hours: 1);
 const Duration sourceRetention = Duration(hours: 48);

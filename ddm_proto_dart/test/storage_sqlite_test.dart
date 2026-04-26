@@ -62,12 +62,14 @@ void main() {
       senderAddress: senderA,
       recipientAddress: recipientX,
       createdAt: now,
+      updatedAt: now.add(const Duration(seconds: 10)),
       expiresAt: now.add(const Duration(hours: 1)),
       isRead: false,
       ttlSeconds: 3600,
       payloadType: MessageType.plain,
       payload: Uint8List.fromList(<int>[1]),
       state: messageStateCreated,
+      reliableDelivery: true,
     );
     final second = MessageRecord(
       id: MessageId(_bytes16(0x20)),
@@ -80,6 +82,7 @@ void main() {
       payloadType: MessageType.plain,
       payload: Uint8List.fromList(<int>[2]),
       state: messageStateDelivered,
+      reliableDelivery: false,
     );
     final third = MessageRecord(
       id: MessageId(_bytes16(0x30)),
@@ -92,6 +95,7 @@ void main() {
       payloadType: MessageType.plain,
       payload: Uint8List.fromList(<int>[3]),
       state: messageStateReceived,
+      reliableDelivery: false,
     );
 
     storage.messages.insertMessage(first);
@@ -102,13 +106,15 @@ void main() {
       recipientX,
     );
     expect(byRecipient.length, 2);
-    expect(byRecipient.first.id, third.id);
-    expect(byRecipient.last.id, first.id);
+    expect(byRecipient.first.id, first.id);
+    expect(byRecipient.first.updatedAt, now.add(const Duration(seconds: 10)));
+    expect(byRecipient.first.reliableDelivery, isTrue);
+    expect(byRecipient.last.id, third.id);
 
     final bySender = storage.messages.listMessagesBySenderAddress(senderA);
     expect(bySender.length, 2);
-    expect(bySender.first.id, second.id);
-    expect(bySender.last.id, first.id);
+    expect(bySender.first.id, first.id);
+    expect(bySender.last.id, second.id);
 
     expect(storage.messages.countMessagesByRecipientAddress(recipientX), 2);
     expect(storage.messages.countMessagesBySenderAddress(senderA), 2);

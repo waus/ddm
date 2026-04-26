@@ -473,28 +473,33 @@ final class MessageRecord {
     required this.senderAddress,
     required this.recipientAddress,
     required DateTime createdAt,
+    DateTime? updatedAt,
     required DateTime expiresAt,
     required this.isRead,
     required this.ttlSeconds,
     required this.payloadType,
     required Uint8List payload,
     required this.state,
+    required this.reliableDelivery,
     this.streamId,
     this.powDifficulty,
   })  : payload = Uint8List.fromList(payload),
         createdAt = createdAt.toUtc(),
+        updatedAt = (updatedAt ?? createdAt).toUtc(),
         expiresAt = expiresAt.toUtc();
 
   final MessageId id;
   final String senderAddress;
   final String recipientAddress;
   final DateTime createdAt;
+  final DateTime updatedAt;
   final DateTime expiresAt;
   final bool isRead;
   final int ttlSeconds;
   final MessageType payloadType;
   final Uint8List payload;
   final String state;
+  final bool reliableDelivery;
   final StreamId? streamId;
   final int? powDifficulty;
 }
@@ -508,30 +513,58 @@ final class MessagesRepository {
     _db.execute(
       '''
 INSERT INTO messages(
-  id, sender_address, recipient_address, created_at, expires_at, is_read, ttl_seconds,
-  payload_type, payload, state
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 ''',
       <Object?>[
         message.id.toBytes(),
         message.senderAddress,
         message.recipientAddress,
         _formatStoredTime(message.createdAt),
+        _formatStoredTime(message.updatedAt),
         _formatStoredTime(message.expiresAt),
         message.isRead ? 1 : 0,
         message.ttlSeconds,
         message.payloadType.code,
         Uint8List.fromList(message.payload),
         message.state,
+        message.reliableDelivery ? 1 : 0,
       ],
     );
   }
 
   void updateMessageState(MessageId messageId, String state) {
     _db.execute(
-      'UPDATE messages SET state = ? WHERE id = ?;',
-      <Object?>[state, messageId.toBytes()],
+      'UPDATE messages SET state = ?, updated_at = ? WHERE id = ?;',
+      <Object?>[
+        state,
+        _formatStoredTime(DateTime.now().toUtc()),
+        messageId.toBytes()
+      ],
+    );
+  }
+
+  void updateMessageExpiry(
+    MessageId messageId, {
+    required DateTime expiresAt,
+    required DateTime updatedAt,
+  }) {
+    _db.execute(
+      'UPDATE messages SET expires_at = ?, updated_at = ? WHERE id = ?;',
+      <Object?>[
+        _formatStoredTime(expiresAt.toUtc()),
+        _formatStoredTime(updatedAt.toUtc()),
+        messageId.toBytes(),
+      ],
+    );
+  }
+
+  void markMessageReliableDelivery(MessageId messageId) {
+    _db.execute(
+      'UPDATE messages SET reliable_delivery = 1 WHERE id = ?;',
+      <Object?>[messageId.toBytes()],
     );
   }
 
@@ -546,8 +579,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     final rows = _db.select(
       '''
 SELECT
-  id, sender_address, recipient_address, created_at, expires_at, is_read, ttl_seconds,
-  payload_type, payload, state
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
 FROM messages
 WHERE id = ?;
 ''',
@@ -564,8 +597,8 @@ WHERE id = ?;
     final rows = _db.select(
       '''
 SELECT
-  id, sender_address, recipient_address, created_at, expires_at, is_read, ttl_seconds,
-  payload_type, payload, state
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
 FROM messages
 WHERE state = ?
 ORDER BY created_at ASC, id ASC;
@@ -575,12 +608,27 @@ ORDER BY created_at ASC, id ASC;
     return rows.map(_scanMessage).toList(growable: false);
   }
 
+  List<MessageRecord> listExpiredReliablePowSyncedMessages(DateTime now) {
+    final rows = _db.select(
+      '''
+SELECT
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
+FROM messages
+WHERE state = ? AND reliable_delivery != 0 AND expires_at < ?
+ORDER BY updated_at ASC, id ASC;
+''',
+      <Object?>[messageStatePowSynced, _formatStoredTime(now.toUtc())],
+    );
+    return rows.map(_scanMessage).toList(growable: false);
+  }
+
   List<MessageRecord> listMessages() {
     final rows = _db.select(
       '''
 SELECT
-  id, sender_address, recipient_address, created_at, expires_at, is_read, ttl_seconds,
-  payload_type, payload, state
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
 FROM messages
 ORDER BY created_at ASC, id ASC;
 ''',
@@ -609,11 +657,11 @@ ORDER BY created_at ASC, id ASC;
     final rows = _db.select(
       '''
 SELECT
-  id, sender_address, recipient_address, created_at, expires_at, is_read, ttl_seconds,
-  payload_type, payload, state
+  id, sender_address, recipient_address, created_at, updated_at, expires_at, is_read, ttl_seconds,
+  payload_type, payload, state, reliable_delivery
 FROM messages
 WHERE $columnName = ?
-ORDER BY created_at DESC, id DESC;
+ORDER BY updated_at DESC, id DESC;
 ''',
       <Object?>[address],
     );
@@ -652,6 +700,10 @@ ORDER BY created_at DESC, id DESC;
         _asString(row['created_at'], 'message created_at'),
         'message created_at',
       ),
+      updatedAt: _parseStoredTime(
+        _asString(row['updated_at'], 'message updated_at'),
+        'message updated_at',
+      ),
       expiresAt: _parseStoredTime(
         _asString(row['expires_at'], 'message expires_at'),
         'message expires_at',
@@ -661,6 +713,8 @@ ORDER BY created_at DESC, id DESC;
       payloadType: payloadType,
       payload: _asBytes(row['payload'], 'message payload'),
       state: _asString(row['state'], 'message state'),
+      reliableDelivery:
+          _asInt(row['reliable_delivery'], 'message reliable_delivery') != 0,
       streamId: streamId,
     );
   }

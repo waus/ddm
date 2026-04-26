@@ -95,10 +95,17 @@ final class BlobIndex {
     DdmSqliteStorage? storage,
     Iterable<BlobIndexInitRecord> preload = const <BlobIndexInitRecord>[],
     this.rootRetention = blobStorageRootRetention,
+    Duration? garbageCollectionInterval,
   })  : _nowUtc = nowUtc,
         _storage = storage {
     _appendRoot(_MessageIndexNode.emptyBranch(), _unixSeconds(_nowUtc()), null);
     _preload(preload);
+    if (garbageCollectionInterval != null) {
+      _garbageCollectionTimer = Timer.periodic(
+        garbageCollectionInterval,
+        (_) => runGarbageCollection(_nowUtc()),
+      );
+    }
   }
 
   final UtcNow _nowUtc;
@@ -108,6 +115,8 @@ final class BlobIndex {
       <MessageIndexNodeId, _IndexedMessageIndexNode>{};
   final List<_BlobIndexRootEntry> _roots = <_BlobIndexRootEntry>[];
   int _rootsHead = 0;
+  Timer? _garbageCollectionTimer;
+  bool _closed = false;
 
   BlobIndexAddResult add(SyncBlobId id, int expiresAt) {
     final now = _unixSeconds(_nowUtc());
@@ -137,6 +146,9 @@ final class BlobIndex {
   }
 
   List<SyncBlobId> runGarbageCollection(DateTime now) {
+    if (_closed) {
+      return const <SyncBlobId>[];
+    }
     final nowSeconds = _unixSeconds(now.toUtc());
     _collectExpiredMessages(nowSeconds);
     final deleted = _collectObsoleteRoots(nowSeconds);
@@ -144,6 +156,15 @@ final class BlobIndex {
       _storage?.syncBlobs.deleteSyncBlobById(id);
     }
     return deleted;
+  }
+
+  void close() {
+    if (_closed) {
+      return;
+    }
+    _closed = true;
+    _garbageCollectionTimer?.cancel();
+    _garbageCollectionTimer = null;
   }
 
   int get totalBlobs {
@@ -324,12 +345,14 @@ final class LocalSyncSource implements SyncSource {
   })  : _storage = storage,
         _nowUtc = nowUtc,
         _onImportedBlob = onImportedBlob,
-        index = index ?? _buildIndex(storage: storage, nowUtc: nowUtc);
+        index = index ?? _buildIndex(storage: storage, nowUtc: nowUtc),
+        _ownsIndex = index == null;
 
   final DdmSqliteStorage _storage;
   final UtcNow _nowUtc;
   final ImportedEncryptedHandler? _onImportedBlob;
   final BlobIndex index;
+  final bool _ownsIndex;
 
   @override
   String get id => 'local';
@@ -406,7 +429,11 @@ final class LocalSyncSource implements SyncSource {
   Future<List<String>> discoverPeers() async => const <String>[];
 
   @override
-  void stop() {}
+  void stop() {
+    if (_ownsIndex) {
+      index.close();
+    }
+  }
 }
 
 final class SyncService {
@@ -471,6 +498,10 @@ final class SyncService {
   Future<List<ConfigRecord>> getConfigs() => localSource.getConfigs();
 
   List<PeerRecord> listStoredPeers() => _storage.peers.listPeers();
+
+  void close() {
+    localSource.stop();
+  }
 }
 
 Future<int> recursiveSync({
@@ -971,7 +1002,12 @@ BlobIndex _buildIndex({
         ),
       )
       .toList(growable: false);
-  return BlobIndex(storage: storage, nowUtc: nowUtc, preload: preload);
+  return BlobIndex(
+    storage: storage,
+    nowUtc: nowUtc,
+    preload: preload,
+    garbageCollectionInterval: blobStorageGcInterval,
+  );
 }
 
 bool _syncPrefixMatchesLeaf(String syncPrefix, SyncBlobId id) {

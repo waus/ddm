@@ -10,6 +10,7 @@ import 'account_policy.dart';
 import 'app_controller.dart';
 import 'app_shortcuts.dart';
 import 'app_state.dart';
+import 'app_theme.dart';
 import 'external_storage_status_button.dart';
 import 'mailbox_icon.dart';
 import 'message_compose_form.dart';
@@ -61,26 +62,23 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
     final controller = ref.read(appControllerProvider.notifier);
     final state = widget.state;
     final newMessageShortcut = newMessageShortcutActivator();
-    final compactTheme = Theme.of(context).copyWith(
-      visualDensity: const VisualDensity(horizontal: -3, vertical: -3),
-    );
+    final desktopTheme = buildDesktopTheme(Theme.of(context));
     return Focus(
       autofocus: true,
       child: Shortcuts(
         shortcuts: <ShortcutActivator, Intent>{
-          newMessageShortcut: const _DesktopNewMessageIntent(),
-          closeComposeShortcutActivator: const _DesktopCloseComposeIntent(),
+          newMessageShortcut: const NewMessageIntent(),
+          closeComposeShortcutActivator: const CloseComposeIntent(),
         },
         child: Actions(
           actions: <Type, Action<Intent>>{
-            _DesktopNewMessageIntent: CallbackAction<_DesktopNewMessageIntent>(
+            NewMessageIntent: CallbackAction<NewMessageIntent>(
               onInvoke: (_) {
                 _openCompose(state, controller);
                 return null;
               },
             ),
-            _DesktopCloseComposeIntent:
-                CallbackAction<_DesktopCloseComposeIntent>(
+            CloseComposeIntent: CallbackAction<CloseComposeIntent>(
               onInvoke: (_) {
                 if (_selection is _DesktopComposeSelection) {
                   _closeCompose(state);
@@ -90,7 +88,7 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
             ),
           },
           child: Theme(
-            data: compactTheme,
+            data: desktopTheme,
             // App shell
             child: Scaffold(
               // Safe layout
@@ -114,29 +112,17 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
                       ),
                       child: Row(
                         children: [
-                          MenuBar(
-                            children: [
-                              SubmenuButton(
-                                menuChildren: [
-                                  MenuItemButton(
-                                    shortcut: newMessageShortcut,
-                                    onPressed: state.accounts.isEmpty
-                                        ? null
-                                        : () => _openCompose(state, controller),
-                                    child: const Text('New message'),
-                                  ),
-                                ],
-                                child: const Text('Message'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(width: 12),
-                          FilledButton.icon(
-                            onPressed: state.accounts.isEmpty
-                                ? null
-                                : () => _openCompose(state, controller),
-                            icon: const Icon(Icons.edit_outlined),
-                            label: const Text('Write message'),
+                          Tooltip(
+                            message:
+                                'Write message (${newMessageShortcutLabel()})',
+                            waitDuration: const Duration(milliseconds: 200),
+                            child: FilledButton.icon(
+                              onPressed: state.accounts.isEmpty
+                                  ? null
+                                  : () => _openCompose(state, controller),
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Write message'),
+                            ),
                           ),
                         ],
                       ),
@@ -334,14 +320,6 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
   }
 }
 
-final class _DesktopNewMessageIntent extends Intent {
-  const _DesktopNewMessageIntent();
-}
-
-final class _DesktopCloseComposeIntent extends Intent {
-  const _DesktopCloseComposeIntent();
-}
-
 final class _DesktopSidebar extends StatelessWidget {
   const _DesktopSidebar({
     required this.state,
@@ -455,7 +433,7 @@ final class _AccountTreeItemState extends State<_AccountTreeItem> {
     final colorScheme = Theme.of(context).colorScheme;
     final selected = widget.selection is _DesktopAccountSelection &&
         widget.selection!.accountId == widget.account.id;
-    final borderRadius = BorderRadius.circular(6);
+    final borderRadius = appShapesOf(context).navigationItemBorderRadius;
     final foregroundColor = selected ? colorScheme.onPrimary : null;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -536,7 +514,7 @@ final class _MailboxTreeItem extends StatelessWidget {
     final selected = selection is _DesktopMailboxSelection &&
         selection!.accountId == account.id &&
         (selection! as _DesktopMailboxSelection).mailbox == mailbox;
-    final borderRadius = BorderRadius.circular(6);
+    final borderRadius = appShapesOf(context).navigationItemBorderRadius;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Material(
@@ -820,6 +798,7 @@ final class _DesktopComposePane extends StatelessWidget {
       accounts: state.accounts,
       initialAccountId: accountId,
       onCancel: onCancel,
+      showSendTooltip: true,
       onSubmit: ({
         required AccountRecord sender,
         required String recipientAddress,

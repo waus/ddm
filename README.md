@@ -44,3 +44,8 @@ Location:
 - global configuration distribution: developer-signed config timeline objects,
   replicated through the same channels as messages;
 - local storage: `SQLite`;
+
+## Contributing
+
+We are open to any contributions limited by UI/UX scope. 
+Please create tasks with feature requests and bug reports, send pull requests with fixes and improvements.

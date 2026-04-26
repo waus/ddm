@@ -43,12 +43,14 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_address TEXT NOT NULL,
   recipient_address TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   is_read INTEGER NOT NULL,
   ttl_seconds INTEGER NOT NULL,
   payload_type TEXT NOT NULL,
   payload BLOB NOT NULL,
-  state TEXT NOT NULL
+  state TEXT NOT NULL,
+  reliable_delivery INTEGER NOT NULL
 );
 ''',
   '''
@@ -58,6 +60,10 @@ ON messages(state);
   '''
 CREATE INDEX IF NOT EXISTS idx_messages_created_at
 ON messages(created_at);
+''',
+  '''
+CREATE INDEX IF NOT EXISTS idx_messages_updated_at
+ON messages(updated_at);
 ''',
   '''
 CREATE TABLE IF NOT EXISTS sync_blobs (

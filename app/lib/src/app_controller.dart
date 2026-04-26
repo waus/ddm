@@ -66,11 +66,14 @@ final class AppController extends StateNotifier<AppState> {
   Timer? _backgroundSyncTimer;
   Timer? _backgroundDiscoveryTimer;
   Timer? _backgroundPeerExchangeTimer;
+  Timer? _reliableDeliveryRetryStartupTimer;
+  Timer? _reliableDeliveryRetryTimer;
   Timer? _noiseGeneratorTimer;
   bool _backgroundStarted = false;
   bool _backgroundSyncRunning = false;
   bool _backgroundDiscoveryRunning = false;
   bool _backgroundPeerExchangeRunning = false;
+  bool _reliableDeliveryRetryRunning = false;
   bool _outboxPublishRunning = false;
   bool _outboxPublishRequested = false;
   bool _noiseGeneratorRunning = false;
@@ -87,6 +90,7 @@ final class AppController extends StateNotifier<AppState> {
       _core = core;
       _refreshState(core, section: AppSection.accounts);
       unawaited(_publishPendingOutbox(core));
+      unawaited(_startReliableDeliveryRetry(core));
       unawaited(_startNoiseGenerator(core));
       if (core.runtimeOptions.transports.backgroundSyncEnabled) {
         unawaited(_startBackgroundSync(core));
@@ -315,6 +319,8 @@ final class AppController extends StateNotifier<AppState> {
     _backgroundSyncTimer?.cancel();
     _backgroundDiscoveryTimer?.cancel();
     _backgroundPeerExchangeTimer?.cancel();
+    _reliableDeliveryRetryStartupTimer?.cancel();
+    _reliableDeliveryRetryTimer?.cancel();
     _noiseGeneratorTimer?.cancel();
     _core?.close();
   }
@@ -440,6 +446,32 @@ final class AppController extends StateNotifier<AppState> {
     _appDebug('background sync timers started');
   }
 
+  Future<void> _startReliableDeliveryRetry(DdmCore core) async {
+    if (_closed) {
+      return;
+    }
+    _reliableDeliveryRetryStartupTimer?.cancel();
+    _reliableDeliveryRetryTimer?.cancel();
+    _reliableDeliveryRetryStartupTimer = Timer(
+      reliableDeliveryRetryStartupDelay,
+      () {
+        if (_closed) {
+          return;
+        }
+        unawaited(_runReliableDeliveryRetry(core));
+        _reliableDeliveryRetryTimer = Timer.periodic(
+          reliableDeliveryRetryInterval,
+          (_) => unawaited(_runReliableDeliveryRetry(core)),
+        );
+      },
+    );
+    _appDebug(
+      'reliable delivery retry timer scheduled '
+      'startup_delay=$reliableDeliveryRetryStartupDelay '
+      'interval=$reliableDeliveryRetryInterval',
+    );
+  }
+
   Future<void> _startNoiseGenerator(DdmCore core) async {
     if (_closed) {
       return;
@@ -508,6 +540,39 @@ final class AppController extends StateNotifier<AppState> {
       _setBackgroundError(core, 'Background sync failed', error);
     } finally {
       _backgroundSyncRunning = false;
+    }
+  }
+
+  Future<void> _runReliableDeliveryRetry(DdmCore core) async {
+    if (_closed || _reliableDeliveryRetryRunning || _outboxPublishRunning) {
+      return;
+    }
+    _reliableDeliveryRetryRunning = true;
+    try {
+      final now = DateTime.now().toUtc();
+      final expired = core.outbox.listExpiredReliableDeliveryMessages(now);
+      if (expired.isEmpty) {
+        return;
+      }
+      _appDebug(
+        'reliable delivery retry starting expired=${expired.length}',
+      );
+      final config = core.config.loadActiveConfigCore(now);
+      final published = await core.outbox.retryExpiredReliableDelivery(
+        now: now,
+        activeConfig: config,
+        pow: _dependencies.powService,
+      );
+      _appDebug(
+        'reliable delivery retry completed published=${published.length}',
+      );
+      if (!_closed) {
+        state = _stateWithRuntimeSnapshot(core, clearError: true);
+      }
+    } catch (error) {
+      _appDebug('reliable delivery retry failed error=$error');
+    } finally {
+      _reliableDeliveryRetryRunning = false;
     }
   }
 
@@ -683,7 +748,7 @@ final class AppController extends StateNotifier<AppState> {
     if (_closed) {
       return;
     }
-    if (_outboxPublishRunning) {
+    if (_outboxPublishRunning || _reliableDeliveryRetryRunning) {
       _outboxPublishRequested = true;
       return;
     }

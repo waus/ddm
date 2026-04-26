@@ -34,11 +34,11 @@ final class _MobileLayoutState extends ConsumerState<MobileLayout> {
       autofocus: true,
       child: Shortcuts(
         shortcuts: <ShortcutActivator, Intent>{
-          newMessageShortcutActivator(): const _MobileNewMessageIntent(),
+          newMessageShortcutActivator(): const NewMessageIntent(),
         },
         child: Actions(
           actions: <Type, Action<Intent>>{
-            _MobileNewMessageIntent: CallbackAction<_MobileNewMessageIntent>(
+            NewMessageIntent: CallbackAction<NewMessageIntent>(
               onInvoke: (_) {
                 _openCompose(context, controller);
                 return null;
@@ -125,10 +125,6 @@ final class _MobileLayoutState extends ConsumerState<MobileLayout> {
       ),
     );
   }
-}
-
-final class _MobileNewMessageIntent extends Intent {
-  const _MobileNewMessageIntent();
 }
 
 final class _MobileScreenBody extends StatelessWidget {
@@ -594,11 +590,11 @@ final class _MobileComposeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Shortcuts(
       shortcuts: const <ShortcutActivator, Intent>{
-        closeComposeShortcutActivator: _MobileCloseComposeIntent(),
+        closeComposeShortcutActivator: CloseComposeIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
-          _MobileCloseComposeIntent: CallbackAction<_MobileCloseComposeIntent>(
+          CloseComposeIntent: CallbackAction<CloseComposeIntent>(
             onInvoke: (_) {
               Navigator.of(context).pop();
               return null;
@@ -661,10 +657,6 @@ final class _MobileComposeScreen extends StatelessWidget {
       ),
     );
   }
-}
-
-final class _MobileCloseComposeIntent extends Intent {
-  const _MobileCloseComposeIntent();
 }
 
 String _formatMessageDate(DateTime value) {

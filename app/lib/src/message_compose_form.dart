@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:flutter/material.dart';
 
+import 'app_theme.dart';
+import 'app_shortcuts.dart';
 import 'message_ttl_field.dart';
 
 typedef MessageComposeSubmit = Future<String?> Function({
@@ -18,6 +22,7 @@ final class MessageComposeForm extends StatefulWidget {
     this.onCancel,
     this.padding = const EdgeInsets.all(24),
     this.autofocusAddress = false,
+    this.showSendTooltip = false,
     super.key,
   });
 
@@ -27,6 +32,7 @@ final class MessageComposeForm extends StatefulWidget {
   final VoidCallback? onCancel;
   final EdgeInsets padding;
   final bool autofocusAddress;
+  final bool showSendTooltip;
 
   @override
   State<MessageComposeForm> createState() => _MessageComposeFormState();
@@ -92,91 +98,108 @@ final class _MessageComposeFormState extends State<MessageComposeForm> {
       );
     }
 
-    return ListView(
-      padding: widget.padding,
-      children: [
-        Text(
-          'Write message',
-          style: Theme.of(context).textTheme.headlineMedium,
-        ),
-        const SizedBox(height: 24),
-        DropdownButtonFormField<int>(
-          initialValue: _selectedAccountId,
-          decoration: const InputDecoration(
-            labelText: 'From account',
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        submitMessageShortcutActivator(): const SubmitMessageIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          SubmitMessageIntent: CallbackAction<SubmitMessageIntent>(
+            onInvoke: (_) {
+              if (!_submitting) {
+                unawaited(_submit());
+              }
+              return null;
+            },
           ),
-          items: [
-            for (final account in widget.accounts)
-              DropdownMenuItem<int>(
-                value: account.id,
-                child: Text(account.name),
-              ),
-          ],
-          onChanged: _submitting
-              ? null
-              : (value) {
-                  setState(() {
-                    _selectedAccountId = value;
-                  });
-                },
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _addressController,
-          readOnly: _submitting,
-          autofocus: widget.autofocusAddress,
-          decoration: const InputDecoration(
-            labelText: 'Address',
-          ),
-        ),
-        const SizedBox(height: 16),
-        MessageTtlField(
-          value: _ttl,
-          onChanged: _submitting
-              ? (_) {}
-              : (value) {
-                  setState(() {
-                    _ttl = value;
-                  });
-                },
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _textController,
-          readOnly: _submitting,
-          minLines: 8,
-          maxLines: 16,
-          decoration: const InputDecoration(
-            labelText: 'Text',
-            alignLabelWithHint: true,
-          ),
-        ),
-        if (_submitError != null) ...[
-          const SizedBox(height: 16),
-          Text(
-            _submitError!,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.error,
-            ),
-          ),
-        ],
-        const SizedBox(height: 24),
-        Row(
+        },
+        child: ListView(
+          padding: widget.padding,
           children: [
-            if (widget.onCancel != null)
-              TextButton(
-                onPressed: _submitting ? null : widget.onCancel,
-                child: const Text('Cancel'),
+            Text(
+              'Write message',
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+            const SizedBox(height: 24),
+            DropdownButtonFormField<int>(
+              initialValue: _selectedAccountId,
+              decoration: const InputDecoration(
+                labelText: 'From account',
               ),
-            if (widget.onCancel != null) const SizedBox(width: 12),
-            FilledButton.icon(
-              onPressed: _submitting ? null : _submit,
-              icon: const Icon(Icons.send_outlined),
-              label: const Text('Send'),
+              items: [
+                for (final account in widget.accounts)
+                  DropdownMenuItem<int>(
+                    value: account.id,
+                    child: Text(account.name),
+                  ),
+              ],
+              onChanged: _submitting
+                  ? null
+                  : (value) {
+                      setState(() {
+                        _selectedAccountId = value;
+                      });
+                    },
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _addressController,
+              readOnly: _submitting,
+              autofocus: widget.autofocusAddress,
+              decoration: const InputDecoration(
+                labelText: 'Address',
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _textController,
+              readOnly: _submitting,
+              minLines: 8,
+              maxLines: 16,
+              decoration: multilineTextFieldDecoration(
+                context,
+                labelText: 'Text',
+              ),
+            ),
+            const SizedBox(height: 16),
+            MessageTtlField(
+              value: _ttl,
+              onChanged: _submitting
+                  ? (_) {}
+                  : (value) {
+                      setState(() {
+                        _ttl = value;
+                      });
+                    },
+            ),
+            if (_submitError != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                _submitError!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                ),
+              ),
+            ],
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                if (widget.onCancel != null)
+                  OutlinedButton(
+                    onPressed: _submitting ? null : widget.onCancel,
+                    child: const Text('Cancel'),
+                  ),
+                const Spacer(),
+                _SendButton(
+                  enabled: !_submitting,
+                  showTooltip: widget.showSendTooltip,
+                  onPressed: _submit,
+                ),
+              ],
             ),
           ],
         ),
-      ],
+      ),
     );
   }
 
@@ -257,5 +280,34 @@ final class _MessageComposeFormState extends State<MessageComposeForm> {
       });
       return;
     }
+  }
+}
+
+final class _SendButton extends StatelessWidget {
+  const _SendButton({
+    required this.enabled,
+    required this.showTooltip,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final bool showTooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final button = FilledButton.icon(
+      onPressed: enabled ? onPressed : null,
+      icon: const Icon(Icons.send_outlined),
+      label: const Text('Send'),
+    );
+    if (!showTooltip) {
+      return button;
+    }
+    return Tooltip(
+      message: 'Send message (${submitMessageShortcutLabel()})',
+      waitDuration: const Duration(milliseconds: 200),
+      child: button,
+    );
   }
 }
