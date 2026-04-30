@@ -39,13 +39,12 @@ final class HttpSyncSourceClient implements SyncSource {
       final json = await _doJson('GET', 'configs');
       final configs = _requiredList(json, 'configs');
       return configs.map((item) {
-        final map = _requiredMapValue(item, 'config record');
-        return ConfigRecord(
-          version: _requiredInt(map, 'version'),
-          payload: parseHexBytes(
-            _requiredString(map, 'payload_hex'),
-            expectedBytes: _requiredString(map, 'payload_hex').length ~/ 2,
-            label: 'config payload',
+        return parseConfigRecord(
+          parseHexBytes(
+            _requiredStringValue(item, 'config record'),
+            expectedBytes:
+                _requiredStringValue(item, 'config record').length ~/ 2,
+            label: 'config record',
           ),
         );
       }).toList(growable: false);
@@ -388,10 +387,7 @@ final class HttpSyncSourceServer implements SyncTransportServer {
     await _writeJson(request.response, HttpStatus.ok, <String, Object?>{
       'configs': configs
           .map(
-            (config) => <String, Object?>{
-              'version': config.version,
-              'payload_hex': bytesToHex(config.payload),
-            },
+            (config) => bytesToHex(config.toBytes()),
           )
           .toList(growable: false),
     });
@@ -742,6 +738,13 @@ String _requiredString(Map<String, Object?> map, String key) {
   final value = map[key];
   if (value is! String) {
     throw FormatException('$key must be string');
+  }
+  return value;
+}
+
+String _requiredStringValue(Object? value, String label) {
+  if (value is! String) {
+    throw FormatException('$label must be string');
   }
   return value;
 }

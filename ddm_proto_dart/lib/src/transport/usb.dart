@@ -11,7 +11,10 @@ Future<List<String>> findExternalStorageFiles() async {
     return _findSyncFilesInChildDirs(const <String>['/Volumes']);
   }
   if (Platform.isLinux) {
-    return _findSyncFilesInChildDirs(const <String>['/media']);
+    return _findSyncFilesInGrandchildDirs(const <String>[
+      '/media',
+      '/run/media',
+    ]);
   }
   if (Platform.isWindows) {
     return _findRegularFiles(_windowsDriveSyncFiles());
@@ -42,6 +45,59 @@ Future<List<String>> _findSyncFilesInChildDirs(List<String> roots) async {
         continue;
       }
       candidates.add(_joinPath(entry.path, syncDatabaseFileName));
+    }
+  }
+  return _findRegularFiles(candidates);
+}
+
+Future<List<String>> _findSyncFilesInGrandchildDirs(List<String> roots) async {
+  final candidates = <String>[];
+  for (final root in roots) {
+    List<FileSystemEntity> userEntries;
+    try {
+      userEntries = Directory(root).listSync(followLinks: false);
+    } on FileSystemException {
+      continue;
+    } on OSError {
+      continue;
+    }
+    for (final userEntry in userEntries) {
+      FileSystemEntityType userType;
+      try {
+        userType =
+            FileSystemEntity.typeSync(userEntry.path, followLinks: false);
+      } on FileSystemException {
+        continue;
+      } on OSError {
+        continue;
+      }
+      if (userType != FileSystemEntityType.directory) {
+        continue;
+      }
+
+      List<FileSystemEntity> deviceEntries;
+      try {
+        deviceEntries = Directory(userEntry.path).listSync(followLinks: false);
+      } on FileSystemException {
+        continue;
+      } on OSError {
+        continue;
+      }
+      for (final deviceEntry in deviceEntries) {
+        FileSystemEntityType deviceType;
+        try {
+          deviceType =
+              FileSystemEntity.typeSync(deviceEntry.path, followLinks: false);
+        } on FileSystemException {
+          continue;
+        } on OSError {
+          continue;
+        }
+        if (deviceType != FileSystemEntityType.directory) {
+          continue;
+        }
+        candidates.add(_joinPath(deviceEntry.path, syncDatabaseFileName));
+      }
     }
   }
   return _findRegularFiles(candidates);

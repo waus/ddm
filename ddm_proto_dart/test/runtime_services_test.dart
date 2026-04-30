@@ -70,6 +70,12 @@ void main() {
     expect(message.updatedAt, message.createdAt);
     expect(message.reliableDelivery, isFalse);
     expect(core.outbox.listPendingMessages().map((m) => m.id), [message.id]);
+
+    final contacts = core.contacts.listContacts(alice);
+    expect(contacts, hasLength(1));
+    expect(contacts.single.address, bob.address);
+    expect(contacts.single.account, alice.address);
+    expect(contacts.single.approved, isFalse);
   });
 
   test('send requires a local sender account', () async {
@@ -138,6 +144,59 @@ void main() {
     expect(outbox.map((m) => m.id), [outbound.id]);
   });
 
+  test('local message deletion blocks unexpired received messages', () async {
+    final now = DateTime.utc(2026, 1, 1, 12, 0, 0);
+    final core = _openCore(nowUtc: () => now);
+    addTearDown(core.close);
+
+    final alice = await core.accounts.createAccount('alice');
+    final bob = await core.accounts.createAccount('bob');
+    final inbound = await _decodedMessage(
+      sender: bob,
+      recipient: alice,
+      message: 'protected until expiry',
+      messageIdSeed: 0x31,
+    );
+    await core.receive.materializeDecodedInbound(
+      recipient: alice,
+      encrypted: inbound.encrypted,
+      decrypted: inbound.decrypted,
+    );
+    final received =
+        core.accounts.listMailboxMessages(alice, Mailbox.inbox).single;
+    final outbound = core.messaging.sendTextMessage(
+      sender: alice,
+      recipient: Address.fromText(bob.address),
+      text: 'allowed to delete',
+      ttl: const Duration(hours: 1),
+    );
+
+    expect(canDeleteLocalMessage(received, now), isFalse);
+    expect(
+      () => core.accounts.deleteLocalMessages(
+        alice,
+        <MessageId>[outbound.id, received.id],
+        now: now,
+      ),
+      throwsFormatException,
+    );
+    expect(
+        core.accounts.listMailboxMessages(alice, Mailbox.inbox), hasLength(1));
+    expect(
+        core.accounts.listMailboxMessages(alice, Mailbox.outbox), hasLength(1));
+
+    final afterExpiry = received.expiresAt.add(const Duration(seconds: 1));
+    expect(
+      core.accounts.deleteLocalMessages(
+        alice,
+        <MessageId>[received.id],
+        now: afterExpiry,
+      ),
+      1,
+    );
+    expect(core.accounts.listMailboxMessages(alice, Mailbox.inbox), isEmpty);
+  });
+
   test('decoded inbound ACK marks matching outbound message delivered',
       () async {
     final core = _openCore();
@@ -187,7 +246,6 @@ void main() {
 
     final published = await core.outbox.publishMessage(
       message.id,
-      activeConfig: core.config.loadActiveConfigCore(now),
       pow: pow,
       encrypt: encryptor.call,
     );
@@ -248,7 +306,6 @@ void main() {
 
     final published = await core.outbox.publishMessage(
       message.id,
-      activeConfig: core.config.loadActiveConfigCore(now),
       pow: pow,
       encrypt: encryptor.call,
     );
@@ -313,7 +370,6 @@ void main() {
 
     await core.outbox.publishMessage(
       message.id,
-      activeConfig: core.config.loadActiveConfigCore(now),
       pow: pow,
       encrypt: encryptor.call,
     );
@@ -321,7 +377,6 @@ void main() {
     now = DateTime.utc(2026, 4, 19, 12, 0, 0);
     final retried = await core.outbox.retryExpiredReliableDelivery(
       now: now,
-      activeConfig: core.config.loadActiveConfigCore(now),
       pow: pow,
       encrypt: encryptor.call,
     );
@@ -363,7 +418,6 @@ void main() {
     final encryptor = _RecordingEncryptor();
 
     final published = await core.outbox.publishEphemeralRandomMessage(
-      activeConfig: core.config.loadActiveConfigCore(now),
       pow: pow,
       ttl: const Duration(days: 2),
       minPayloadBytes: 512,
@@ -411,13 +465,11 @@ void main() {
     );
     await bobCore.outbox.publishMessage(
       outbound.id,
-      activeConfig: bobCore.config.loadActiveConfigCore(now),
       pow: _RecordingPowService(),
     );
 
     final received = await aliceCore.sync.importFrom(
       source: bobCore.sync.localSource,
-      currentConfig: aliceCore.config.loadActiveConfigCore(now),
       verifyPow: ({
         required Uint8List modulus,
         required Uint8List input,
@@ -456,13 +508,11 @@ void main() {
     );
     await bobCore.outbox.publishMessage(
       outbound.id,
-      activeConfig: bobCore.config.loadActiveConfigCore(now),
       pow: _RecordingPowService(),
     );
 
     final received = await aliceCore.sync.importFrom(
       source: bobCore.sync.localSource,
-      currentConfig: aliceCore.config.loadActiveConfigCore(now),
       verifyPow: _acceptPow,
     );
 
@@ -476,7 +526,6 @@ void main() {
 
     await bobCore.sync.importFrom(
       source: aliceCore.sync.localSource,
-      currentConfig: bobCore.config.loadActiveConfigCore(now),
       verifyPow: _acceptPow,
     );
     final outbox = bobCore.accounts.listMailboxMessages(bob, Mailbox.outbox);

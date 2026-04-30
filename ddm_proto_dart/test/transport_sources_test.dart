@@ -38,7 +38,7 @@ void main() {
       index: BlobIndex(nowUtc: () => now)..add(fixture.id, fixture.expiresAt),
       blobs: <SyncBlobId, SyncBlob>{fixture.id: fixture.blob},
       configs: <ConfigRecord>[
-        ConfigRecord(version: 1, payload: Uint8List.fromList(<int>[9])),
+        parseConfigRecord(Uint8List.fromList(<int>[0x82, 0x01, 0x09])),
       ],
     );
     final server = HttpSyncSourceServer(listenAddress: '127.0.0.1:0');
@@ -49,8 +49,8 @@ void main() {
     addTearDown(client.stop);
 
     final configs = await client.getConfigs();
-    expect(configs.single.version, 1);
-    expect(configs.single.payload, <int>[9]);
+    expect(configRecordVersion(configs.single), 1);
+    expect(configRecordPayload(configs.single), <int>[9]);
 
     final root = await client.getMessageIndexRoot();
     expect(root, isNotNull);

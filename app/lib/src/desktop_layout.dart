@@ -11,6 +11,7 @@ import 'app_controller.dart';
 import 'app_shortcuts.dart';
 import 'app_state.dart';
 import 'app_theme.dart';
+import 'contact_book.dart';
 import 'external_storage_status_button.dart';
 import 'mailbox_icon.dart';
 import 'message_compose_form.dart';
@@ -26,6 +27,7 @@ const _desktopDividerHitWidth = 12.0;
 const _desktopMailboxListInitialFraction = 0.5;
 const _desktopMailboxListMinHeight = 180.0;
 const _desktopMessageDetailMinHeight = 180.0;
+const _desktopMessageListRowHeight = 36.0;
 const _desktopHorizontalDividerHeight = 1.0;
 const _desktopHorizontalDividerHitHeight = 12.0;
 
@@ -63,204 +65,207 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
     final state = widget.state;
     final newMessageShortcut = newMessageShortcutActivator();
     final desktopTheme = buildDesktopTheme(Theme.of(context));
-    return Focus(
-      autofocus: true,
-      child: Shortcuts(
-        shortcuts: <ShortcutActivator, Intent>{
-          newMessageShortcut: const NewMessageIntent(),
-          closeComposeShortcutActivator: const CloseComposeIntent(),
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        newMessageShortcut: const NewMessageIntent(),
+        closeComposeShortcutActivator: const CloseComposeIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          NewMessageIntent: CallbackAction<NewMessageIntent>(
+            onInvoke: (_) {
+              _openCompose(state, controller);
+              return null;
+            },
+          ),
+          CloseComposeIntent: CallbackAction<CloseComposeIntent>(
+            onInvoke: (_) {
+              if (_selection is _DesktopComposeSelection) {
+                _closeCompose(state);
+              }
+              return null;
+            },
+          ),
         },
-        child: Actions(
-          actions: <Type, Action<Intent>>{
-            NewMessageIntent: CallbackAction<NewMessageIntent>(
-              onInvoke: (_) {
-                _openCompose(state, controller);
-                return null;
-              },
-            ),
-            CloseComposeIntent: CallbackAction<CloseComposeIntent>(
-              onInvoke: (_) {
-                if (_selection is _DesktopComposeSelection) {
-                  _closeCompose(state);
-                }
-                return null;
-              },
-            ),
-          },
-          child: Theme(
-            data: desktopTheme,
-            // App shell
-            child: Scaffold(
-              // Safe layout
-              body: SafeArea(
-                // Main column
-                child: Column(
-                  children: [
-                    // Top bar
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
-                        border: Border(
-                          bottom: BorderSide(
-                            color: Theme.of(context).colorScheme.outlineVariant,
-                          ),
+        child: Theme(
+          data: desktopTheme,
+          // App shell
+          child: Scaffold(
+            // Safe layout
+            body: SafeArea(
+              // Main column
+              child: Column(
+                children: [
+                  // Top bar
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color:
+                          Theme.of(context).colorScheme.surfaceContainerHighest,
+                      border: Border(
+                        bottom: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Tooltip(
-                            message:
-                                'Write message (${newMessageShortcutLabel()})',
-                            waitDuration: const Duration(milliseconds: 200),
-                            child: FilledButton.icon(
-                              onPressed: state.accounts.isEmpty
-                                  ? null
-                                  : () => _openCompose(state, controller),
-                              icon: const Icon(Icons.edit_outlined),
-                              label: const Text('Write message'),
-                            ),
-                          ),
-                        ],
-                      ),
                     ),
-                    // Main area
-                    Expanded(
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          final availableWidth = constraints.maxWidth;
-                          final effectiveMaxSidebarWidth = availableWidth -
-                              desktopDividerWidth -
-                              desktopContentMinWidth;
-                          final fallbackSidebarWidth = availableWidth *
-                              (_sidebarFraction ??
-                                  desktopSidebarInitialFraction);
-                          final sidebarWidth = fallbackSidebarWidth.clamp(
-                            desktopSidebarMinWidth,
-                            effectiveMaxSidebarWidth,
-                          );
-                          final messagesWidth = availableWidth -
-                              sidebarWidth -
-                              desktopDividerWidth;
+                    child: Row(
+                      children: [
+                        Tooltip(
+                          message:
+                              'Write message (${newMessageShortcutLabel()})',
+                          waitDuration: const Duration(milliseconds: 200),
+                          child: FilledButton.icon(
+                            onPressed: state.accounts.isEmpty
+                                ? null
+                                : () => _openCompose(state, controller),
+                            icon: const Icon(Icons.edit_outlined),
+                            label: const Text('Write message'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: state.accounts.isEmpty
+                              ? null
+                              : () => _openAddressBook(
+                                    context,
+                                    state,
+                                    controller,
+                                  ),
+                          icon: const Icon(Icons.people_outline),
+                          label: const Text('Address book'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Main area
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final availableWidth = constraints.maxWidth;
+                        final effectiveMaxSidebarWidth = availableWidth -
+                            desktopDividerWidth -
+                            desktopContentMinWidth;
+                        final fallbackSidebarWidth = availableWidth *
+                            (_sidebarFraction ?? desktopSidebarInitialFraction);
+                        final sidebarWidth = fallbackSidebarWidth.clamp(
+                          desktopSidebarMinWidth,
+                          effectiveMaxSidebarWidth,
+                        );
+                        final messagesWidth =
+                            availableWidth - sidebarWidth - desktopDividerWidth;
 
-                          return Stack(
-                            children: [
-                              // Split view
-                              Row(
-                                children: [
-                                  // Left panel
-                                  SizedBox(
-                                    width: sidebarWidth,
-                                    child: ColoredBox(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                      child: _DesktopSidebar(
-                                        state: state,
-                                        controller: controller,
-                                        selection: _selection,
-                                        onAccountSelected: (account) {
-                                          setState(() {
-                                            _selection =
-                                                _DesktopAccountSelection(
-                                                    account.id);
-                                          });
-                                          controller.selectAccount(account);
-                                        },
-                                        onMailboxSelected: (account, mailbox) {
-                                          setState(() {
-                                            _selection =
-                                                _DesktopMailboxSelection(
-                                              account.id,
-                                              mailbox,
-                                            );
-                                          });
-                                          controller.selectAccountMailbox(
-                                            account,
-                                            mailbox,
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                  // Divider
-                                  SizedBox(
-                                    width: desktopDividerWidth,
-                                    child: ColoredBox(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .outlineVariant,
-                                    ),
-                                  ),
-                                  // Detail pane
-                                  SizedBox(
-                                    width: messagesWidth,
-                                    child: _DesktopDetailPane(
-                                      selection: _selection,
+                        return Stack(
+                          children: [
+                            // Split view
+                            Row(
+                              children: [
+                                // Left panel
+                                SizedBox(
+                                  width: sidebarWidth,
+                                  child: ColoredBox(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest,
+                                    child: _DesktopSidebar(
                                       state: state,
                                       controller: controller,
-                                      onComposeCancel: () =>
-                                          _closeCompose(state),
-                                      onComposeSubmitted: (account) {
+                                      selection: _selection,
+                                      onAccountSelected: (account) {
+                                        setState(() {
+                                          _selection = _DesktopAccountSelection(
+                                              account.id);
+                                        });
+                                        controller.selectAccount(account);
+                                      },
+                                      onMailboxSelected: (account, mailbox) {
                                         setState(() {
                                           _selection = _DesktopMailboxSelection(
                                             account.id,
-                                            Mailbox.outbox,
+                                            mailbox,
                                           );
-                                          _selectionBeforeCompose = null;
                                         });
+                                        controller.selectAccountMailbox(
+                                          account,
+                                          mailbox,
+                                        );
                                       },
-                                      readState: () =>
-                                          ref.read(appControllerProvider),
                                     ),
                                   ),
-                                ],
-                              ),
-                              // Resize handle
-                              Positioned(
-                                left: sidebarWidth -
-                                    (_desktopDividerHitWidth -
-                                            desktopDividerWidth) /
-                                        2,
-                                top: 0,
-                                bottom: 0,
-                                width: _desktopDividerHitWidth,
-                                child: MouseRegion(
-                                  cursor: SystemMouseCursors.resizeColumn,
-                                  child: GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onHorizontalDragUpdate: (details) {
-                                      final nextSidebarWidth =
-                                          (sidebarWidth + details.delta.dx)
-                                              .clamp(
-                                        desktopSidebarMinWidth,
-                                        effectiveMaxSidebarWidth,
-                                      );
-                                      setState(() {
-                                        _sidebarFraction =
-                                            nextSidebarWidth / availableWidth;
-                                      });
-                                      _scheduleSidebarStateSave();
-                                    },
+                                ),
+                                // Divider
+                                SizedBox(
+                                  width: desktopDividerWidth,
+                                  child: ColoredBox(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .outlineVariant,
                                   ),
                                 ),
+                                // Detail pane
+                                SizedBox(
+                                  width: messagesWidth,
+                                  child: _DesktopDetailPane(
+                                    selection: _selection,
+                                    state: state,
+                                    controller: controller,
+                                    onComposeCancel: () => _closeCompose(state),
+                                    onComposeSubmitted: (account) {
+                                      setState(() {
+                                        _selection = _DesktopMailboxSelection(
+                                          account.id,
+                                          Mailbox.outbox,
+                                        );
+                                        _selectionBeforeCompose = null;
+                                      });
+                                    },
+                                    readState: () =>
+                                        ref.read(appControllerProvider),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            // Resize handle
+                            Positioned(
+                              left: sidebarWidth -
+                                  (_desktopDividerHitWidth -
+                                          desktopDividerWidth) /
+                                      2,
+                              top: 0,
+                              bottom: 0,
+                              width: _desktopDividerHitWidth,
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.resizeColumn,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onHorizontalDragUpdate: (details) {
+                                    final nextSidebarWidth =
+                                        (sidebarWidth + details.delta.dx).clamp(
+                                      desktopSidebarMinWidth,
+                                      effectiveMaxSidebarWidth,
+                                    );
+                                    setState(() {
+                                      _sidebarFraction =
+                                          nextSidebarWidth / availableWidth;
+                                    });
+                                    _scheduleSidebarStateSave();
+                                  },
+                                ),
                               ),
-                            ],
-                          );
-                        },
-                      ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                    // Status bar
-                    _DesktopStatusBar(
-                      sync: state.sync,
-                      onExternalStoragePressed:
-                          controller.chooseExternalStorageFile,
-                    ),
-                  ],
-                ),
+                  ),
+                  // Status bar
+                  _DesktopStatusBar(
+                    state: state,
+                    onExternalStoragePressed:
+                        controller.chooseExternalStorageFile,
+                    onUpdatePressed: controller.openUpdateSite,
+                  ),
+                ],
               ),
             ),
           ),
@@ -269,7 +274,11 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
     );
   }
 
-  void _openCompose(AppState state, AppController controller) {
+  void _openCompose(
+    AppState state,
+    AppController controller, {
+    String? recipientAddress,
+  }) {
     if (state.accounts.isEmpty) {
       return;
     }
@@ -278,9 +287,77 @@ final class _DesktopLayoutState extends ConsumerState<DesktopLayout> {
       if (_selection is! _DesktopComposeSelection) {
         _selectionBeforeCompose = _selection;
       }
-      _selection = _DesktopComposeSelection(account.id);
+      _selection = _DesktopComposeSelection(
+        account.id,
+        recipientAddress: recipientAddress,
+      );
     });
     controller.selectSection(AppSection.compose);
+  }
+
+  void _openAddressBook(
+    BuildContext context,
+    AppState state,
+    AppController controller,
+  ) {
+    final account = state.selectedAccount ?? state.accounts.firstOrNull;
+    if (account != null) {
+      controller.refreshContacts(account);
+    }
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Consumer(
+          builder: (context, ref, _) {
+            final liveState = ref.watch(appControllerProvider);
+            return Dialog(
+              child: SizedBox(
+                width: 760,
+                height: 560,
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Address book',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Close',
+                            onPressed: () => Navigator.of(context).pop(),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: ContactBookPanel(
+                          state: liveState,
+                          controller: controller,
+                          onComposeToContact: (contact) {
+                            Navigator.of(context).pop();
+                            _openCompose(
+                              liveState,
+                              controller,
+                              recipientAddress: contact.address,
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _closeCompose(AppState state) {
@@ -585,6 +662,7 @@ final class _DesktopDetailPaneState extends State<_DesktopDetailPane> {
           state: widget.state,
           controller: widget.controller,
           accountId: composeSelection.accountId,
+          recipientAddress: composeSelection.recipientAddress,
           onCancel: widget.onComposeCancel,
           onSubmitted: widget.onComposeSubmitted,
           readState: widget.readState,
@@ -685,7 +763,7 @@ final class _DesktopAccountPane extends StatelessWidget {
   }
 }
 
-final class _DesktopMailboxPane extends StatelessWidget {
+final class _DesktopMailboxPane extends StatefulWidget {
   const _DesktopMailboxPane({
     required this.state,
     required this.controller,
@@ -703,6 +781,21 @@ final class _DesktopMailboxPane extends StatelessWidget {
   final ValueChanged<double> onFractionChanged;
 
   @override
+  State<_DesktopMailboxPane> createState() => _DesktopMailboxPaneState();
+}
+
+final class _DesktopMailboxPaneState extends State<_DesktopMailboxPane> {
+  final Set<MessageId> _selectedMessageIds = <MessageId>{};
+
+  @override
+  void didUpdateWidget(covariant _DesktopMailboxPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final visibleIds =
+        widget.state.messages.map((message) => message.id).toSet();
+    _selectedMessageIds.removeWhere((id) => !visibleIds.contains(id));
+  }
+
+  @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -710,7 +803,7 @@ final class _DesktopMailboxPane extends StatelessWidget {
         final effectiveMaxListHeight = availableHeight -
             _desktopHorizontalDividerHeight -
             _desktopMessageDetailMinHeight;
-        final fallbackListHeight = availableHeight * listFraction;
+        final fallbackListHeight = availableHeight * widget.listFraction;
         final listHeight = fallbackListHeight.clamp(
           _desktopMailboxListMinHeight,
           effectiveMaxListHeight,
@@ -725,9 +818,12 @@ final class _DesktopMailboxPane extends StatelessWidget {
                 SizedBox(
                   height: listHeight,
                   child: _DesktopMessageList(
-                    state: state,
-                    mailbox: mailbox,
-                    onMessageSelected: controller.selectMessage,
+                    state: widget.state,
+                    mailbox: widget.mailbox,
+                    selectedMessageIds: _selectedMessageIds,
+                    onMessageSelected: widget.controller.selectMessage,
+                    onSelectionChanged: _setMessageSelected,
+                    onDeleteSelected: _deleteSelectedMessages,
                   ),
                 ),
                 SizedBox(
@@ -739,8 +835,9 @@ final class _DesktopMailboxPane extends StatelessWidget {
                 SizedBox(
                   height: detailHeight,
                   child: _DesktopMessageDetail(
-                    mailbox: mailbox,
-                    message: state.selectedMessage,
+                    message: widget.state.selectedMessage,
+                    contacts: widget.state.contacts,
+                    onDelete: _deleteMessage,
                   ),
                 ),
               ],
@@ -763,7 +860,7 @@ final class _DesktopMailboxPane extends StatelessWidget {
                       _desktopMailboxListMinHeight,
                       effectiveMaxListHeight,
                     );
-                    onFractionChanged(nextListHeight / availableHeight);
+                    widget.onFractionChanged(nextListHeight / availableHeight);
                   },
                 ),
               ),
@@ -773,6 +870,39 @@ final class _DesktopMailboxPane extends StatelessWidget {
       },
     );
   }
+
+  void _setMessageSelected(MessageRecord message, bool selected) {
+    setState(() {
+      if (selected) {
+        _selectedMessageIds.add(message.id);
+      } else {
+        _selectedMessageIds.remove(message.id);
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedMessages() async {
+    final selectedMessages = widget.state.messages
+        .where((message) => _selectedMessageIds.contains(message.id))
+        .toList(growable: false);
+    final deleted = await widget.controller.deleteMessages(selectedMessages);
+    if (!deleted || !mounted) {
+      return;
+    }
+    setState(_selectedMessageIds.clear);
+  }
+
+  Future<void> _deleteMessage(MessageRecord message) async {
+    final deleted = await widget.controller.deleteMessages(<MessageRecord>[
+      message,
+    ]);
+    if (!deleted || !mounted) {
+      return;
+    }
+    setState(() {
+      _selectedMessageIds.remove(message.id);
+    });
+  }
 }
 
 final class _DesktopComposePane extends StatelessWidget {
@@ -780,6 +910,7 @@ final class _DesktopComposePane extends StatelessWidget {
     required this.state,
     required this.controller,
     required this.accountId,
+    this.recipientAddress,
     required this.onCancel,
     required this.onSubmitted,
     required this.readState,
@@ -788,6 +919,7 @@ final class _DesktopComposePane extends StatelessWidget {
   final AppState state;
   final AppController controller;
   final int accountId;
+  final String? recipientAddress;
   final VoidCallback onCancel;
   final ValueChanged<AccountRecord> onSubmitted;
   final AppState Function() readState;
@@ -797,6 +929,8 @@ final class _DesktopComposePane extends StatelessWidget {
     return MessageComposeForm(
       accounts: state.accounts,
       initialAccountId: accountId,
+      initialRecipientAddress: recipientAddress,
+      contacts: state.contacts,
       onCancel: onCancel,
       showSendTooltip: true,
       onSubmit: ({
@@ -826,33 +960,57 @@ final class _DesktopMessageList extends StatelessWidget {
   const _DesktopMessageList({
     required this.state,
     required this.mailbox,
+    required this.selectedMessageIds,
     required this.onMessageSelected,
+    required this.onSelectionChanged,
+    required this.onDeleteSelected,
   });
 
   final AppState state;
   final Mailbox mailbox;
+  final Set<MessageId> selectedMessageIds;
   final ValueChanged<MessageRecord> onMessageSelected;
+  final void Function(MessageRecord message, bool selected) onSelectionChanged;
+  final VoidCallback onDeleteSelected;
 
   @override
   Widget build(BuildContext context) {
+    final selectedMessages = state.messages
+        .where((message) => selectedMessageIds.contains(message.id))
+        .toList(growable: false);
+    final deleteBlockReason = messageListDeletionBlockReason(
+      selectedMessages,
+      DateTime.now().toUtc(),
+    );
+    final canDelete = selectedMessages.isNotEmpty && deleteBlockReason == null;
     return Column(
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: const Row(
+          child: Row(
             children: [
+              const SizedBox(width: 44),
               Expanded(
                 flex: 4,
                 child: Text('Correspondent'),
               ),
-              Expanded(
+              const Expanded(
                 flex: 2,
                 child: Text('State'),
               ),
-              Expanded(
+              const Expanded(
                 flex: 2,
                 child: Text('Date'),
+              ),
+              Tooltip(
+                message: deleteBlockReason ?? 'Delete selected messages',
+                waitDuration: const Duration(milliseconds: 200),
+                child: OutlinedButton.icon(
+                  onPressed: canDelete ? onDeleteSelected : null,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Delete'),
+                ),
               ),
             ],
           ),
@@ -871,19 +1029,39 @@ final class _DesktopMessageList extends StatelessWidget {
                     return InkWell(
                       onTap: () => onMessageSelected(message),
                       child: Container(
+                        height: _desktopMessageListRowHeight,
                         color: state.selectedMessage?.id == message.id
                             ? Theme.of(context).colorScheme.secondaryContainer
                             : null,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,
-                          vertical: 10,
                         ),
                         child: Row(
                           children: [
+                            SizedBox(
+                              width: 44,
+                              child: Checkbox(
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                                value: selectedMessageIds.contains(message.id),
+                                onChanged: (selected) => onSelectionChanged(
+                                  message,
+                                  selected ?? false,
+                                ),
+                              ),
+                            ),
                             Expanded(
                               flex: 4,
                               child: Text(
-                                shortText(messagePeer(message, mailbox), 28),
+                                shortText(
+                                  messagePeerLabel(
+                                    message,
+                                    mailbox,
+                                    state.contacts,
+                                  ),
+                                  28,
+                                ),
                                 style: unread
                                     ? const TextStyle(
                                         fontWeight: FontWeight.bold,
@@ -899,6 +1077,7 @@ final class _DesktopMessageList extends StatelessWidget {
                               flex: 2,
                               child: Text(_formatDateTime(message.createdAt)),
                             ),
+                            const SizedBox(width: 104),
                           ],
                         ),
                       ),
@@ -913,45 +1092,69 @@ final class _DesktopMessageList extends StatelessWidget {
 
 final class _DesktopMessageDetail extends StatelessWidget {
   const _DesktopMessageDetail({
-    required this.mailbox,
     required this.message,
+    required this.contacts,
+    required this.onDelete,
   });
 
-  final Mailbox mailbox;
   final MessageRecord? message;
+  final List<ContactRecord> contacts;
+  final ValueChanged<MessageRecord> onDelete;
 
   @override
   Widget build(BuildContext context) {
     final currentMessage = message;
     if (currentMessage == null) {
-      return const Center(
-        child: Text('Select a message'),
+      return ColoredBox(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: const Center(
+          child: Text('Select a message'),
+        ),
       );
     }
+    final deleteBlockReason = messageDeletionBlockReason(
+      currentMessage,
+      DateTime.now().toUtc(),
+    );
+    final isReceived = currentMessage.state == messageStateReceived;
+    final peerAddress = isReceived
+        ? currentMessage.senderAddress
+        : currentMessage.recipientAddress;
     return ListView(
       children: [
         ColoredBox(
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _MessageHeaderRow(
-                  label: 'From',
-                  value: currentMessage.senderAddress,
-                ),
-                _MessageHeaderRow(
-                  label: 'To',
-                  value: currentMessage.recipientAddress,
+                  label: isReceived ? 'From' : 'To',
+                  value: contactDisplayName(
+                    contacts,
+                    peerAddress,
+                  ),
+                  bottomPadding: 8,
                 ),
                 _MessageHeaderRow(
                   label: 'Date',
                   value: _formatDateTimeWithSeconds(currentMessage.createdAt),
+                  bottomPadding: 8,
                 ),
-                _MessageHeaderRow(
-                  label: 'State',
-                  value: messageStatusLabel(currentMessage, mailbox),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Tooltip(
+                    message: deleteBlockReason ?? 'Delete message',
+                    waitDuration: const Duration(milliseconds: 200),
+                    child: OutlinedButton.icon(
+                      onPressed: deleteBlockReason == null
+                          ? () => onDelete(currentMessage)
+                          : null,
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('Delete'),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -970,15 +1173,17 @@ final class _MessageHeaderRow extends StatelessWidget {
   const _MessageHeaderRow({
     required this.label,
     required this.value,
+    this.bottomPadding = 12,
   });
 
   final String label;
   final String value;
+  final double bottomPadding;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: EdgeInsets.only(bottom: bottomPadding),
       child: SelectableText('$label: $value'),
     );
   }
@@ -986,15 +1191,18 @@ final class _MessageHeaderRow extends StatelessWidget {
 
 final class _DesktopStatusBar extends StatelessWidget {
   const _DesktopStatusBar({
-    required this.sync,
+    required this.state,
     required this.onExternalStoragePressed,
+    required this.onUpdatePressed,
   });
 
-  final SyncDiagnostics sync;
+  final AppState state;
   final VoidCallback onExternalStoragePressed;
+  final VoidCallback onUpdatePressed;
 
   @override
   Widget build(BuildContext context) {
+    final sync = state.sync;
     return Container(
       constraints: const BoxConstraints(minHeight: 40),
       width: double.infinity,
@@ -1033,6 +1241,28 @@ final class _DesktopStatusBar extends StatelessWidget {
                   ? 'none'
                   : sync.registeredProtocols.join(', '),
             ),
+            const SizedBox(width: 18),
+            _StatusSection(
+              label: 'Version',
+              value: state.appVersion?.displayText ?? 'unknown',
+            ),
+            if (state.update != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: IconButton(
+                  tooltip: state.update!.mandatoryUpdate
+                      ? 'Required update available'
+                      : 'Update available',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onUpdatePressed,
+                  icon: Icon(
+                    Icons.upgrade,
+                    color: state.update!.mandatoryUpdate
+                        ? Theme.of(context).colorScheme.error
+                        : Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
             const SizedBox(width: 18),
             if (sync.externalStorageFileUrls.isNotEmpty) ...[
               ExternalStorageStatusButton(
@@ -1171,7 +1401,9 @@ final class _DesktopMailboxSelection extends _DesktopSelection {
 }
 
 final class _DesktopComposeSelection extends _DesktopSelection {
-  const _DesktopComposeSelection(super.accountId);
+  const _DesktopComposeSelection(super.accountId, {this.recipientAddress});
+
+  final String? recipientAddress;
 }
 
 String _formatDateTime(DateTime value) {

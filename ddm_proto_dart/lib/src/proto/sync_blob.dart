@@ -41,6 +41,53 @@ Future<({SyncBlobId id, EncryptedMessage encrypted})> parseAndValidateBlob({
     );
   }
 
+  final parsed = parseSyncBlobPayload(blobPayload);
+  final envelope = parsed.envelope;
+  final encrypted = parsed.encrypted;
+  if (encrypted.expiresTime < currentUnixSeconds) {
+    throw const FormatException('encrypted messages is expired');
+  }
+  final maxExpiresAt = currentUnixSeconds + encrypted.ttl + 2;
+  if (encrypted.expiresTime > maxExpiresAt) {
+    throw const FormatException('expires_time exceeds ttl-bound lifetime');
+  }
+
+  final expectedDifficulty = calculateDifficulty(
+    base: currentConfig.powBaseTarget,
+    scaleDivisor: currentConfig.powScaleDivisor,
+    ttlSeconds: encrypted.ttl,
+    payloadBytes: envelope.object.length,
+  );
+
+  final valid = await verifyPow(
+    modulus: currentConfig.powModulus,
+    input: encrypted.powInputHash(),
+    difficulty: expectedDifficulty,
+    y: envelope.y,
+    pi: envelope.pi,
+  );
+  if (!valid) {
+    throw FormatException(
+      'vdf proof does not satisfy difficulty $expectedDifficulty',
+    );
+  }
+
+  final id = deriveSyncBlobId(
+    streamId: encrypted.streamNumber,
+    blobPayload: blobPayload,
+  );
+  return (id: id, encrypted: encrypted);
+}
+
+({PowEnvelope envelope, EncryptedMessage encrypted}) parseSyncBlobPayload(
+  Uint8List blobPayload,
+) {
+  if (blobPayload.length > maxPowEnvelopeBytes) {
+    throw FormatException(
+      'pow envelope exceeds limit: got ${blobPayload.length} bytes, max $maxPowEnvelopeBytes',
+    );
+  }
+
   final envelope = PowEnvelope.fromBytes(blobPayload);
   if (!bytesEqual(envelope.toBytes(), blobPayload)) {
     throw const FormatException(
@@ -75,42 +122,19 @@ Future<({SyncBlobId id, EncryptedMessage encrypted})> parseAndValidateBlob({
   if (encrypted.payload.isEmpty) {
     throw const FormatException('encrypted payload must not be empty');
   }
+  encryptedConfigTimeUnix(encrypted);
+  return (envelope: envelope, encrypted: encrypted);
+}
+
+int encryptedConfigTimeUnix(EncryptedMessage encrypted) {
   if (encrypted.ttl <= 0) {
     throw const FormatException('encrypted ttl must be positive');
   }
-  if (encrypted.expiresTime < currentUnixSeconds) {
-    throw const FormatException('encrypted messages is expired');
+  final configTime = encrypted.expiresTime - encrypted.ttl;
+  if (configTime < 0) {
+    throw const FormatException('encrypted config time underflow');
   }
-  final maxExpiresAt = currentUnixSeconds + encrypted.ttl + 2;
-  if (encrypted.expiresTime > maxExpiresAt) {
-    throw const FormatException('expires_time exceeds ttl-bound lifetime');
-  }
-
-  final expectedDifficulty = calculateDifficulty(
-    base: currentConfig.powBaseTarget,
-    scaleDivisor: currentConfig.powScaleDivisor,
-    ttlSeconds: encrypted.ttl,
-    payloadBytes: envelope.object.length,
-  );
-
-  final valid = await verifyPow(
-    modulus: currentConfig.powModulus,
-    input: encrypted.powInputHash(),
-    difficulty: expectedDifficulty,
-    y: envelope.y,
-    pi: envelope.pi,
-  );
-  if (!valid) {
-    throw FormatException(
-      'vdf proof does not satisfy difficulty $expectedDifficulty',
-    );
-  }
-
-  final id = deriveSyncBlobId(
-    streamId: encrypted.streamNumber,
-    blobPayload: blobPayload,
-  );
-  return (id: id, encrypted: encrypted);
+  return configTime;
 }
 
 int calculateDifficulty({

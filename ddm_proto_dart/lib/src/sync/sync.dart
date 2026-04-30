@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:ddm_proto_dart/src/proto/_bytes.dart';
+import 'package:ddm_proto_dart/src/proto/config_manager.dart';
 import 'package:ddm_proto_dart/src/proto/config_record.dart';
 import 'package:ddm_proto_dart/src/proto/constants.dart';
 import 'package:ddm_proto_dart/src/proto/envelope.dart';
@@ -13,6 +14,7 @@ import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 import 'package:ddm_proto_dart/src/storage/constants.dart';
 import 'package:ddm_proto_dart/src/storage/storage.dart';
 import 'package:ddm_proto_dart/src/sync/constants.dart';
+import 'package:ddm_proto_dart/src/transport/errors.dart';
 
 typedef ImportedEncryptedHandler = FutureOr<void> Function(
   EncryptedMessage encrypted, {
@@ -52,13 +54,11 @@ abstract interface class SyncSource {
 
 final class ImportValidationContext {
   const ImportValidationContext({
-    required this.currentConfig,
-    required this.currentUnixSeconds,
+    required this.configs,
     required this.verifyPow,
   });
 
-  final ConfigV1Core currentConfig;
-  final int currentUnixSeconds;
+  final ConfigManager configs;
   final PowProofVerifier verifyPow;
 }
 
@@ -339,16 +339,19 @@ final class BlobIndex {
 final class LocalSyncSource implements SyncSource {
   LocalSyncSource({
     required DdmSqliteStorage storage,
+    required ConfigManager configs,
     required UtcNow nowUtc,
     BlobIndex? index,
     ImportedEncryptedHandler? onImportedBlob,
   })  : _storage = storage,
+        _configs = configs,
         _nowUtc = nowUtc,
         _onImportedBlob = onImportedBlob,
         index = index ?? _buildIndex(storage: storage, nowUtc: nowUtc),
         _ownsIndex = index == null;
 
   final DdmSqliteStorage _storage;
+  final ConfigManager _configs;
   final UtcNow _nowUtc;
   final ImportedEncryptedHandler? _onImportedBlob;
   final BlobIndex index;
@@ -364,10 +367,7 @@ final class LocalSyncSource implements SyncSource {
 
   @override
   Future<List<ConfigRecord>> getConfigs() async {
-    return _storage.configs
-        .listConfigRecords()
-        .map((record) => record.record.clone())
-        .toList(growable: false);
+    return _configs.records();
   }
 
   @override
@@ -439,17 +439,21 @@ final class LocalSyncSource implements SyncSource {
 final class SyncService {
   SyncService({
     required DdmSqliteStorage storage,
+    required ConfigManager configs,
     required UtcNow nowUtc,
     ImportedEncryptedHandler? onImportedBlob,
   })  : _storage = storage,
+        _configs = configs,
         _nowUtc = nowUtc,
         localSource = LocalSyncSource(
           storage: storage,
+          configs: configs,
           nowUtc: nowUtc,
           onImportedBlob: onImportedBlob,
         );
 
   final DdmSqliteStorage _storage;
+  final ConfigManager _configs;
   final UtcNow _nowUtc;
   final LocalSyncSource localSource;
 
@@ -457,10 +461,13 @@ final class SyncService {
 
   Future<int> importFrom({
     required SyncSource source,
-    required ConfigV1Core currentConfig,
     required PowProofVerifier verifyPow,
     String prefix = '',
   }) async {
+    final sourceConfigs = await source.getConfigs();
+    for (final record in sourceConfigs) {
+      await _configs.addRecord(record);
+    }
     if (!source.flags.has(syncSourceFlagSupportTree)) {
       return 0;
     }
@@ -474,8 +481,8 @@ final class SyncService {
         node: root,
         from: source,
         to: localSource,
-        currentConfig: currentConfig,
         currentUnixSeconds: currentUnixSeconds,
+        configs: _configs,
         verifyPow: verifyPow,
       );
     }
@@ -486,8 +493,8 @@ final class SyncService {
         node: localRoot,
         from: localSource,
         to: source,
-        currentConfig: currentConfig,
         currentUnixSeconds: currentUnixSeconds,
+        configs: _configs,
         verifyPow: verifyPow,
         remaining: _SyncLimit(reverseSyncPushLimit),
       );
@@ -509,8 +516,8 @@ Future<int> recursiveSync({
   required MessageIndexNode node,
   required SyncSource from,
   required SyncSource to,
-  required ConfigV1Core currentConfig,
   required int currentUnixSeconds,
+  required ConfigManager configs,
   required PowProofVerifier verifyPow,
 }) async {
   return _recursiveSyncWithLimit(
@@ -518,10 +525,278 @@ Future<int> recursiveSync({
     node: node,
     from: from,
     to: to,
-    currentConfig: currentConfig,
     currentUnixSeconds: currentUnixSeconds,
+    configs: configs,
     verifyPow: verifyPow,
   );
+}
+
+Future<void> checkSource({
+  required SyncSource source,
+  required int currentUnixSeconds,
+  required ConfigManager configs,
+  required PowProofVerifier verifyPow,
+  Random? random,
+}) async {
+  final root = await source.getMessageIndexRoot();
+  if (root == null) {
+    return;
+  }
+  try {
+    root.validate();
+  } on FormatException catch (error) {
+    throw SyncSourceException.invalidResponse(
+      'validate root: ${error.message}',
+      details: error,
+    );
+  }
+  if (root.branch != null && root.branch!.childrenCount == 0) {
+    return;
+  }
+
+  final sampler = random ?? Random();
+  for (var i = 0; i < sourceCheckSampleCount; i++) {
+    final rank = _sourceCheckRandomRank(root, sampler);
+    await _checkSourceSample(
+      source: source,
+      node: root,
+      rank: rank,
+      currentUnixSeconds: currentUnixSeconds,
+      configs: configs,
+      verifyPow: verifyPow,
+    );
+  }
+}
+
+Future<void> _checkSourceSample({
+  required SyncSource source,
+  required MessageIndexNode node,
+  required int rank,
+  required int currentUnixSeconds,
+  required ConfigManager configs,
+  required PowProofVerifier verifyPow,
+}) async {
+  var current = node;
+  var currentRank = rank;
+  while (true) {
+    final leaf = current.leaf;
+    if (leaf != null) {
+      await _checkSourceLeaf(
+        source: source,
+        leaf: leaf,
+        currentUnixSeconds: currentUnixSeconds,
+        configs: configs,
+        verifyPow: verifyPow,
+      );
+      return;
+    }
+
+    final branch = current.branch;
+    if (branch == null) {
+      throw const SyncSourceException.invalidResponse(
+        'message index node must be leaf or branch',
+      );
+    }
+    if (branch.childrenCount == 0) {
+      throw SyncSourceException.invalidResponse(
+        'sampled empty branch with prefix ${branch.prefix}',
+      );
+    }
+
+    final children = await _checkSourceLoadChildren(source, branch);
+    var offset = 0;
+    MessageIndexNode? selected;
+    for (final child in children) {
+      if (child == null) {
+        continue;
+      }
+      final childSize = _sourceCheckSubtreeSize(child);
+      if (currentRank < offset + childSize) {
+        selected = child;
+        currentRank -= offset;
+        break;
+      }
+      offset += childSize;
+    }
+    if (selected == null) {
+      throw SyncSourceException.invalidResponse(
+        'rank $rank is outside branch ${branch.prefix} children count ${branch.childrenCount}',
+      );
+    }
+    current = selected;
+  }
+}
+
+Future<List<MessageIndexNode?>> _checkSourceLoadChildren(
+  SyncSource source,
+  MessageIndexBranch branch,
+) async {
+  final out = List<MessageIndexNode?>.filled(messageIndexChildSlotCount, null);
+  var sum = 0;
+  var minTtl = 0;
+  var maxTtl = 0;
+
+  for (var slot = 0; slot < branch.childrenIds.length; slot++) {
+    final childId = branch.childrenIds[slot];
+    if (childId == null) {
+      continue;
+    }
+    final child = await source.getMessageIndexNode(childId);
+    if (child == null) {
+      throw SyncSourceException.invalidResponse(
+        'sync source ${source.id} returned nil message index node ${childId.toHex()}',
+      );
+    }
+    try {
+      child.validate();
+    } on FormatException catch (error) {
+      throw SyncSourceException.invalidResponse(
+        'validate child node ${childId.toHex()}: ${error.message}',
+        details: error,
+      );
+    }
+    final childHash = child.hash();
+    if (childHash != childId) {
+      throw SyncSourceException.invalidResponse(
+        'child node hash ${childHash.toHex()} does not match referenced id ${childId.toHex()}',
+      );
+    }
+    _checkSourceChildSlot(branch.prefix, slot, child);
+
+    final childSize = _sourceCheckSubtreeSize(child);
+    if (childSize == 0) {
+      throw SyncSourceException.invalidResponse(
+        'child node ${childId.toHex()} has zero subtree size',
+      );
+    }
+    sum += childSize;
+    final (childMinTtl, childMaxTtl) = _sourceCheckTtlBounds(child);
+    if (minTtl == 0 || childMinTtl < minTtl) {
+      minTtl = childMinTtl;
+    }
+    if (childMaxTtl > maxTtl) {
+      maxTtl = childMaxTtl;
+    }
+    out[slot] = child;
+  }
+
+  if (sum != branch.childrenCount) {
+    throw SyncSourceException.invalidResponse(
+      'branch ${branch.prefix} children count ${branch.childrenCount} does not match direct child sum $sum',
+    );
+  }
+  if (minTtl != branch.minTtl || maxTtl != branch.maxTtl) {
+    throw SyncSourceException.invalidResponse(
+      'branch ${branch.prefix} ttl bounds min=${branch.minTtl} max=${branch.maxTtl} do not match direct child bounds min=$minTtl max=$maxTtl',
+    );
+  }
+  return out;
+}
+
+Future<void> _checkSourceLeaf({
+  required SyncSource source,
+  required MessageIndexLeaf leaf,
+  required int currentUnixSeconds,
+  required ConfigManager configs,
+  required PowProofVerifier verifyPow,
+}) async {
+  final results = await source.getSyncBlobs(<SyncBlobId>[leaf.syncBlobId]);
+  if (results.length != 1) {
+    throw SyncSourceException.invalidResponse(
+      'sync source ${source.id} returned ${results.length} sync blobs, want 1',
+    );
+  }
+  final blob = results.single;
+  if (blob == null) {
+    throw SyncSourceException.invalidResponse(
+      'sync source ${source.id} returned nil sync blob ${leaf.syncBlobId.toHex()}',
+    );
+  }
+  if (blob.id != leaf.syncBlobId) {
+    throw SyncSourceException.invalidResponse(
+      'sync source ${source.id} returned sync blob ${blob.id.toHex()}, want ${leaf.syncBlobId.toHex()}',
+    );
+  }
+
+  ({SyncBlobId id, EncryptedMessage encrypted}) validated;
+  try {
+    final configTime = _syncBlobConfigTime(blob.payload);
+    validated = await parseAndValidateBlob(
+      blobPayload: blob.payload,
+      currentConfig: configs.configAtUnix(configTime),
+      currentUnixSeconds: configTime,
+      verifyPow: verifyPow,
+    );
+  } on FormatException catch (error) {
+    throw SyncSourceException.invalidResponse(
+      'validate sampled sync blob ${leaf.syncBlobId.toHex()}: ${error.message}',
+      details: error,
+    );
+  }
+  if (validated.id != leaf.syncBlobId) {
+    throw SyncSourceException.invalidResponse(
+      'validated sync blob id ${validated.id.toHex()} does not match sampled leaf ${leaf.syncBlobId.toHex()}',
+    );
+  }
+  if (validated.encrypted.expiresTime != leaf.ttl) {
+    throw SyncSourceException.invalidResponse(
+      'sync blob ${validated.id.toHex()} ttl mismatch: tree=${leaf.ttl} blob=${validated.encrypted.expiresTime}',
+    );
+  }
+}
+
+int _sourceCheckRandomRank(MessageIndexNode root, Random random) {
+  final size = _sourceCheckSubtreeSize(root);
+  if (size <= 1) {
+    return 0;
+  }
+  return random.nextInt(size);
+}
+
+int _sourceCheckSubtreeSize(MessageIndexNode node) {
+  if (node.leaf != null) {
+    return 1;
+  }
+  return node.branch!.childrenCount;
+}
+
+(int, int) _sourceCheckTtlBounds(MessageIndexNode node) {
+  final leaf = node.leaf;
+  if (leaf != null) {
+    return (leaf.ttl, leaf.ttl);
+  }
+  final branch = node.branch!;
+  return (branch.minTtl, branch.maxTtl);
+}
+
+void _checkSourceChildSlot(
+  String parentPrefix,
+  int slot,
+  MessageIndexNode child,
+) {
+  final expected = parentPrefix + '0123456789abcdef'[slot];
+  final leaf = child.leaf;
+  if (leaf != null) {
+    if (!_syncPrefixMatchesLeaf(expected, leaf.syncBlobId)) {
+      throw SyncSourceException.invalidResponse(
+        'leaf ${leaf.syncBlobId.toHex()} does not belong to parent slot $expected',
+      );
+    }
+    return;
+  }
+
+  final branch = child.branch;
+  if (branch == null) {
+    throw const SyncSourceException.invalidResponse(
+      'message index child must be leaf or branch',
+    );
+  }
+  if (branch.prefix.length <= parentPrefix.length ||
+      !branch.prefix.startsWith(expected)) {
+    throw SyncSourceException.invalidResponse(
+      'branch prefix ${branch.prefix} does not belong to parent slot $expected',
+    );
+  }
 }
 
 Future<int> _recursiveSyncWithLimit({
@@ -529,8 +804,8 @@ Future<int> _recursiveSyncWithLimit({
   required MessageIndexNode node,
   required SyncSource from,
   required SyncSource to,
-  required ConfigV1Core currentConfig,
   required int currentUnixSeconds,
+  required ConfigManager configs,
   required PowProofVerifier verifyPow,
   _SyncLimit? remaining,
 }) async {
@@ -555,8 +830,8 @@ Future<int> _recursiveSyncWithLimit({
       leaf: leaf,
       from: from,
       to: to,
-      currentConfig: currentConfig,
       currentUnixSeconds: currentUnixSeconds,
+      configs: configs,
       verifyPow: verifyPow,
     );
     return 1;
@@ -593,8 +868,8 @@ Future<int> _recursiveSyncWithLimit({
       node: child,
       from: from,
       to: to,
-      currentConfig: currentConfig,
       currentUnixSeconds: currentUnixSeconds,
+      configs: configs,
       verifyPow: verifyPow,
       remaining: remaining,
     );
@@ -620,8 +895,8 @@ Future<int> _recursiveSyncWithLimit({
       node: child,
       from: from,
       to: to,
-      currentConfig: currentConfig,
       currentUnixSeconds: currentUnixSeconds,
+      configs: configs,
       verifyPow: verifyPow,
       remaining: remaining,
     );
@@ -642,8 +917,8 @@ Future<void> importLeaf({
   required MessageIndexLeaf leaf,
   required SyncSource from,
   required SyncSource to,
-  required ConfigV1Core currentConfig,
   required int currentUnixSeconds,
+  required ConfigManager configs,
   required PowProofVerifier verifyPow,
 }) async {
   final results = await from.getSyncBlobs(<SyncBlobId>[leaf.syncBlobId]);
@@ -664,10 +939,11 @@ Future<void> importLeaf({
     );
   }
 
+  final configTime = _syncBlobConfigTime(blob.payload);
   final validated = await parseAndValidateBlob(
     blobPayload: blob.payload,
-    currentConfig: currentConfig,
-    currentUnixSeconds: currentUnixSeconds,
+    currentConfig: configs.configAtUnix(configTime),
+    currentUnixSeconds: configTime,
     verifyPow: verifyPow,
   );
   if (validated.id != leaf.syncBlobId) {
@@ -683,8 +959,7 @@ Future<void> importLeaf({
   await to.push(
     blob,
     validationContext: ImportValidationContext(
-      currentConfig: currentConfig,
-      currentUnixSeconds: currentUnixSeconds,
+      configs: configs,
       verifyPow: verifyPow,
     ),
   );
@@ -693,6 +968,10 @@ Future<void> importLeaf({
 EncryptedMessage encryptedMessageFromPowEnvelope(Uint8List blobPayload) {
   final envelope = PowEnvelope.fromBytes(blobPayload);
   return EncryptedMessage.fromBytes(envelope.object);
+}
+
+int _syncBlobConfigTime(Uint8List blobPayload) {
+  return encryptedConfigTimeUnix(parseSyncBlobPayload(blobPayload).encrypted);
 }
 
 final class RegisteredSource implements SyncSource {

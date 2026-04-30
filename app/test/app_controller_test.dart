@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:ddm_app/src/app_controller.dart';
 import 'package:ddm_app/src/app_state.dart';
+import 'package:ddm_app/src/update_service.dart';
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +11,53 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ddm_app/src/ddm_app.dart';
 
 void main() {
+  test('AppController checks for newer app versions on startup', () async {
+    final workspace = Directory.systemTemp.createTempSync('ddm-app-update-');
+    addTearDown(() => workspace.deleteSync(recursive: true));
+    Uri? openedUrl;
+    final controller = AppController(
+      AppDependencies(
+        workspacePath: workspace.path,
+        runtimeOptions: const DdmCoreRuntimeOptions(
+          transports: RuntimeTransportOptions(backgroundSyncEnabled: false),
+        ),
+        appVersionLoader: () async => const AppVersion(
+          version: '0.2.0',
+          os: 'linux',
+          arch: 'x64',
+        ),
+        updateChecker: (version) async {
+          expect(version.version, '0.2.0');
+          expect(version.os, 'linux');
+          expect(version.arch, 'x64');
+          return const UpdateCheckResult(
+            lastVersion: '0.3.0',
+            mandatoryUpdate: true,
+          );
+        },
+        urlOpener: (url) async {
+          openedUrl = url;
+          return true;
+        },
+      ),
+    );
+    addTearDown(controller.close);
+
+    await controller.initialize();
+    await _waitUntil(
+      () => controller.state.update != null,
+      timeout: const Duration(seconds: 1),
+    );
+
+    expect(controller.state.appVersion?.displayText, '0.2.0');
+    expect(controller.state.update?.lastVersion, '0.3.0');
+    expect(controller.state.update?.mandatoryUpdate, isTrue);
+
+    await controller.openUpdateSite();
+
+    expect(openedUrl, Uri.parse(updateSiteUrl));
+  });
+
   test('AppController creates accounts and writes composed messages', () async {
     final workspace = Directory.systemTemp.createTempSync('ddm-app-test-');
     addTearDown(() => workspace.deleteSync(recursive: true));
@@ -71,6 +119,76 @@ void main() {
     final account = controller.state.accounts.single;
     expect(account.name, 'Silent');
     expect(Address.fromText(account.address).requiresAck, isFalse);
+  });
+
+  test('AppController adds and deletes contacts', () async {
+    final workspace = Directory.systemTemp.createTempSync('ddm-app-contact-');
+    addTearDown(() => workspace.deleteSync(recursive: true));
+    final controller = AppController(
+      AppDependencies(
+        workspacePath: workspace.path,
+        runtimeOptions: const DdmCoreRuntimeOptions(
+          transports: RuntimeTransportOptions(backgroundSyncEnabled: false),
+        ),
+      ),
+    );
+    addTearDown(controller.close);
+
+    await controller.initialize();
+    await controller.createAccount('Alice');
+    await controller.createAccount('Bob');
+    final alice = controller.state.accounts[0];
+    final bob = controller.state.accounts[1];
+
+    expect(
+      await controller.addContact(
+        account: alice,
+        name: 'Bob',
+        address: bob.address,
+      ),
+      isTrue,
+    );
+    expect(controller.state.contacts.single.name, 'Bob');
+
+    expect(
+      await controller.deleteContact(account: alice, address: bob.address),
+      isTrue,
+    );
+    expect(controller.state.contacts, isEmpty);
+  });
+
+  test('AppController deletes local messages', () async {
+    final workspace =
+        Directory.systemTemp.createTempSync('ddm-app-delete-message-');
+    addTearDown(() => workspace.deleteSync(recursive: true));
+    final controller = AppController(
+      AppDependencies(
+        workspacePath: workspace.path,
+        runtimeOptions: const DdmCoreRuntimeOptions(
+          transports: RuntimeTransportOptions(backgroundSyncEnabled: false),
+        ),
+        powService: _ImmediatePowService(),
+      ),
+    );
+    addTearDown(controller.close);
+
+    await controller.initialize();
+    await controller.createAccount('Alice');
+    final account = controller.state.accounts.single;
+    await controller.sendText(
+      sender: account,
+      recipientAddress: account.address,
+      text: 'delete me',
+    );
+    await _waitUntil(
+      () => controller.state.messages.single.state == messageStatePowSynced,
+      timeout: const Duration(seconds: 3),
+    );
+    controller.selectMessage(controller.state.messages.single);
+
+    expect(await controller.deleteMessages(controller.state.messages), isTrue);
+    expect(controller.state.messages, isEmpty);
+    expect(controller.state.selectedMessage, isNull);
   });
 
   test('AppController source registration imports blobs via background sync',
@@ -380,6 +498,12 @@ void main() {
                 ),
               ),
               externalPowerCheck: () async => false,
+              appVersionLoader: () async => const AppVersion(
+                version: '0.1.0',
+                os: 'linux',
+                arch: 'x64',
+              ),
+              updateChecker: (_) async => null,
             ),
           ),
         ],
@@ -401,6 +525,35 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Create'), findsOneWidget);
+  });
+
+  testWidgets('app shell shows fatal error screen when startup fails',
+      (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDependenciesProvider.overrideWithValue(
+            AppDependencies(
+              workspacePath: '',
+              externalPowerCheck: () async => false,
+              appVersionLoader: () async => const AppVersion(
+                version: '0.1.0',
+                os: 'linux',
+                arch: 'x64',
+              ),
+              updateChecker: (_) async => null,
+            ),
+          ),
+        ],
+        child: const DdmApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Startup failed'), findsOneWidget);
+    expect(find.text('DDM cannot start.'), findsOneWidget);
+    expect(find.textContaining('workdir must not be empty'), findsOneWidget);
+    expect(find.text('New account'), findsNothing);
   });
 }
 

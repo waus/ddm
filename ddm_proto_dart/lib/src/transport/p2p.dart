@@ -1043,10 +1043,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
           peers: null,
           configs: configs
               .map<Object?>(
-                (config) => <Object?>[
-                  config.version,
-                  Uint8List.fromList(config.payload),
-                ],
+                (config) => config.toBytes(),
               )
               .toList(growable: false),
           blobs: null,
@@ -1999,15 +1996,10 @@ const bool _verboseP2pRpcLogs = bool.fromEnvironment(
 const bool _isProductBuild = bool.fromEnvironment('dart.vm.product');
 
 ConfigRecord _configRecordFromWire(Object? item) {
-  if (item is! List<Object?> || item.length != 2) {
+  if (item is! Uint8List) {
     throw const FormatException('decode config record');
   }
-  final version = item[0];
-  final payload = item[1];
-  if (version is! int || payload is! Uint8List) {
-    throw const FormatException('decode config record');
-  }
-  return ConfigRecord(version: version, payload: payload);
+  return parseConfigRecord(item);
 }
 
 Object _messageIndexNodeToWire(MessageIndexNode node) {

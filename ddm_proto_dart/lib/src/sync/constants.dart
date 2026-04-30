@@ -10,6 +10,7 @@ const double ratingInvalidBlobReceived = 5.0;
 const double ratingReceivedSomethingStrange = 2.0;
 
 const int reverseSyncPushLimit = 5;
+const int sourceCheckSampleCount = 20;
 
 const Duration blobStorageRootRetention = Duration(minutes: 10);
 const Duration blobStorageGcInterval = Duration(seconds: 5);

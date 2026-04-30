@@ -1,13 +1,13 @@
 {
   "generator": "go/cmd/gen-golden-fixtures",
   "schema": "go-v1-foundation",
-  "generated_utc": "2026-04-21T21:31:30Z",
+  "generated_utc": "2026-04-29T15:09:42Z",
   "files_sha256_hex": {
     "address.cbor": "ec17bfd2fd4981197b437a2e9b22a128671b926c8f84d3cc4cf5e5eca997a734",
     "compat_inputs.json": "758b6ae4b1bfd8f7c4d984a1cb570e74c6f7b2ae2962c0ec7677fa51b516bbe3",
-    "config_record.json": "5e5e78b343f277904644ba3c36a5e4e64ff8ff4793f355f8285f943a5d29f7b8",
+    "config_record.json": "9c074435624048d280d25dd12f0a5e9f381e93789208cf13b19b607667304240",
     "encrypted_message.cbor": "ced5662fec4fb80623701d7920db36149cd7035bb624fca97b9e6c2e25b52742",
-    "http_sync_configs.json": "d15638e72066a12cd6a2a7d03a75e490bfad36201b42145c06b3274f8de17824",
+    "http_sync_configs.json": "fd3aa0443b04a5a17d322a5ddb3b9ff1ef5657d0f0924a1c4334353852df916f",
     "http_sync_lookup.json": "545877d2f9983588365a99467353c8584821e57b966d69116344767b9c559cf2",
     "http_sync_node.json": "441d1778ac7ed8a19c69fd09f5206522daf6b7ee5562c1907d3cf01beee9120f",
     "http_sync_root.json": "32e6f60beb2420643b320117cb970cf30fd73be841bc743e6d34236fec9263ad",
@@ -22,6 +22,5 @@
     "pow_envelope.cbor": "b6fee739ded8d8280aad2b0b7d482987cea39998c92077dd24bb5dc8a6c5e841",
     "sync_blob.json": "5e9433f23aa92c7d59bf5c9498e0ca73782dcbd82b8b41b376e5bf8fd46b6d78"
   },
-  "compat_doc": "ddm_proto_dart/docs/foundation-interop.md",
   "fixture_doc": "ddm_proto_dart/test/fixtures/go_v1/README.md"
 }

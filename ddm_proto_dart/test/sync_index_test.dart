@@ -5,6 +5,10 @@ import 'dart:typed_data';
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:test/test.dart';
 
+const String _adminPrivateKeyHex =
+    '0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f'
+    'd9bf2148748a85c89da5aad8ee0b0fc2d105fd39d41a4c796536354f0ae2900c';
+
 void main() {
   test('BlobIndex adds blobs into compressed nibble tree', () {
     var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
@@ -126,7 +130,12 @@ void main() {
       ),
     );
 
-    final source = LocalSyncSource(storage: storage, nowUtc: () => now);
+    final configs = _configs(storage, now);
+    final source = LocalSyncSource(
+      storage: storage,
+      configs: configs,
+      nowUtc: () => now,
+    );
     expect(source.index.totalBlobs, 1);
     expect(storage.syncBlobs.getSyncBlobById(expiredId), isNull);
 
@@ -157,8 +166,10 @@ void main() {
       blobs: <SyncBlobId, SyncBlob>{fixture.id: fixture.blob},
     );
     var imported = 0;
+    final configs = _configs(storage, now);
     final local = LocalSyncSource(
       storage: storage,
+      configs: configs,
       nowUtc: () => now,
       onImportedBlob: (encrypted, {validationContext}) {
         imported++;
@@ -170,8 +181,8 @@ void main() {
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
       to: local,
-      currentConfig: _currentConfig(storage),
       currentUnixSeconds: _unix(now),
+      configs: configs,
       verifyPow: _acceptPow,
     );
 
@@ -185,8 +196,8 @@ void main() {
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
       to: local,
-      currentConfig: _currentConfig(storage),
       currentUnixSeconds: _unix(now),
+      configs: configs,
       verifyPow: _acceptPow,
     );
     expect(duplicateReceived, 0);
@@ -208,8 +219,10 @@ void main() {
       index: remoteIndex,
       blobs: <SyncBlobId, SyncBlob>{fixture.id: fixture.blob},
     );
+    final configs = _configs(storage, now);
     final local = LocalSyncSource(
       storage: storage,
+      configs: configs,
       nowUtc: () => now,
       onImportedBlob: (encrypted, {validationContext}) {
         throw StateError('callback failed');
@@ -222,8 +235,8 @@ void main() {
         node: await remote.getMessageIndexRoot() as MessageIndexNode,
         from: remote,
         to: local,
-        currentConfig: _currentConfig(storage),
         currentUnixSeconds: _unix(now),
+        configs: configs,
         verifyPow: _acceptPow,
       ),
       throwsA(isA<StateError>()),
@@ -252,7 +265,11 @@ void main() {
         expiresAt: localFixture.encrypted.expiresTime,
       ),
     );
-    final service = SyncService(storage: storage, nowUtc: () => now);
+    final service = SyncService(
+      storage: storage,
+      configs: _configs(storage, now),
+      nowUtc: () => now,
+    );
 
     final remoteFixture = _buildPowBlob(
       streamId: const StreamId(0xa1020304),
@@ -271,7 +288,6 @@ void main() {
 
     final received = await service.importFrom(
       source: remote,
-      currentConfig: _currentConfig(storage),
       verifyPow: _acceptPow,
     );
 
@@ -303,7 +319,11 @@ void main() {
       );
       localFixtures.add(fixture);
     }
-    final service = SyncService(storage: storage, nowUtc: () => now);
+    final service = SyncService(
+      storage: storage,
+      configs: _configs(storage, now),
+      nowUtc: () => now,
+    );
 
     final remoteFixture = _buildPowBlob(
       streamId: const StreamId(0xa1020304),
@@ -322,7 +342,6 @@ void main() {
 
     await service.importFrom(
       source: remote,
-      currentConfig: _currentConfig(storage),
       verifyPow: _acceptPow,
     );
 
@@ -352,7 +371,11 @@ void main() {
         expiresAt: localFixture.encrypted.expiresTime,
       ),
     );
-    final service = SyncService(storage: storage, nowUtc: () => now);
+    final service = SyncService(
+      storage: storage,
+      configs: _configs(storage, now),
+      nowUtc: () => now,
+    );
     final remote = _MemorySyncSource(
       index: BlobIndex(nowUtc: () => now),
       flags: const SyncSourceFlags(
@@ -363,12 +386,103 @@ void main() {
 
     final received = await service.importFrom(
       source: remote,
-      currentConfig: _currentConfig(storage),
       verifyPow: _acceptPow,
     );
 
     expect(received, 0);
     expect(remote.pushed.map((blob) => blob.id), [localFixture.id]);
+  });
+
+  test('SyncService imports source configs before tree sync', () async {
+    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+
+    final configs = _configs(storage, now);
+    final service = SyncService(
+      storage: storage,
+      configs: configs,
+      nowUtc: () => now,
+    );
+    final remoteConfig = await _buildConfigRecord(
+      seqNo: 1904,
+      activeFromUnix: _unix(now.add(const Duration(days: 1))),
+    );
+    final remote = _MemorySyncSource(
+      index: BlobIndex(nowUtc: () => now),
+      rootIsNull: true,
+      configs: <ConfigRecord>[remoteConfig],
+    );
+
+    final received = await service.importFrom(
+      source: remote,
+      verifyPow: _acceptPow,
+    );
+
+    expect(received, 0);
+    expect(remote.rootLookups, 1);
+    expect(_configSeqNos(configs.records()), contains(1904));
+    expect(storage.configs.listConfigRecords().map(configRecordVersion),
+        everyElement(configRecordVersionV1));
+  });
+
+  test('checkSource accepts empty root', () async {
+    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+
+    await checkSource(
+      source: _MemorySyncSource(index: BlobIndex(nowUtc: () => now)),
+      currentUnixSeconds: _unix(now),
+      configs: _configs(storage, now),
+      verifyPow: _acceptPow,
+    );
+  });
+
+  test('checkSource rejects inflated branch children count', () async {
+    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+
+    final leafId = SyncBlobId.parseHex(
+      '10${List<String>.filled(syncBlobIdSize - 1, '00').join()}',
+    );
+    final leaf = MessageIndexNode.leaf(
+      MessageIndexLeaf(syncBlobId: leafId, ttl: 100),
+    );
+    final children = List<MessageIndexNodeId?>.filled(
+      messageIndexChildSlotCount,
+      null,
+    );
+    children[1] = leaf.hash();
+    final root = MessageIndexNode.branch(
+      MessageIndexBranch(
+        prefix: '',
+        childrenCount: 2,
+        minTtl: 100,
+        maxTtl: 100,
+        childrenIds: children,
+      ),
+    );
+
+    await expectLater(
+      checkSource(
+        source: _FixedTreeSource(
+          root: root,
+          nodes: <MessageIndexNodeId, MessageIndexNode>{leaf.hash(): leaf},
+        ),
+        currentUnixSeconds: _unix(now),
+        configs: _configs(storage, now),
+        verifyPow: _acceptPow,
+      ),
+      throwsA(
+        isA<SyncSourceException>().having(
+          (error) => error.kind,
+          'kind',
+          SyncSourceErrorKind.invalidResponse,
+        ),
+      ),
+    );
   });
 
   test('source selection includes bad and old exploration quotas', () {
@@ -411,10 +525,8 @@ DdmSqliteStorage _openStorage({required UtcNow nowUtc}) {
   return DdmSqliteStorage.open('${dir.path}/$defaultFileName', nowUtc: nowUtc);
 }
 
-ConfigV1Core _currentConfig(DdmSqliteStorage storage) {
-  return ConfigV1Payload.fromBytes(
-    storage.configs.listConfigRecords().single.record.payload,
-  ).core;
+ConfigManager _configs(DdmSqliteStorage storage, DateTime now) {
+  return ConfigManager(storage: storage.configs, nowUtc: () => now);
 }
 
 FutureOr<bool> _acceptPow({
@@ -455,6 +567,49 @@ FutureOr<bool> _acceptPow({
   );
 }
 
+Future<ConfigRecord> _buildConfigRecord({
+  required int seqNo,
+  required int activeFromUnix,
+}) async {
+  final payload = await ConfigV1Payload.build(
+    core: ConfigV1Core(
+      seqNo: seqNo,
+      activeFromUnix: activeFromUnix,
+      powBaseTarget: 1000,
+      powScaleDivisor: 7373,
+      powModulus: _testPowModulus(),
+    ),
+    privateKey: _decodeHex(_adminPrivateKeyHex),
+  );
+  return parseConfigRecord(
+    Uint8List.fromList(
+        <int>[0x82, configRecordVersionV1, ...payload.toBytes()]),
+  );
+}
+
+List<int> _configSeqNos(List<ConfigRecord> records) {
+  return records
+      .map(configRecordPayload)
+      .map(ConfigV1Payload.fromBytes)
+      .map((payload) => payload.core.seqNo)
+      .toList(growable: false);
+}
+
+Uint8List _testPowModulus() {
+  return Uint8List(powModulusSize)
+    ..[0] = 0x80
+    ..[powModulusSize - 1] = 1;
+}
+
+Uint8List _decodeHex(String value) {
+  final normalized = value.trim().toLowerCase();
+  final out = Uint8List(normalized.length ~/ 2);
+  for (var i = 0; i < normalized.length; i += 2) {
+    out[i ~/ 2] = int.parse(normalized.substring(i, i + 2), radix: 16);
+  }
+  return out;
+}
+
 RegisteredSource _registered(String id, double rating, DateTime lastOnlineAt) {
   return RegisteredSource(
     source:
@@ -486,9 +641,11 @@ final class _MemorySyncSource implements SyncSource {
     this.id = 'memory',
     this.flags = const SyncSourceFlags(syncSourceFlagSupportTree),
     this.rootIsNull = false,
+    List<ConfigRecord> configs = const <ConfigRecord>[],
     required this.index,
     Map<SyncBlobId, SyncBlob>? blobs,
-  }) : _blobs = blobs ?? <SyncBlobId, SyncBlob>{};
+  })  : configs = List<ConfigRecord>.from(configs),
+        _blobs = blobs ?? <SyncBlobId, SyncBlob>{};
 
   @override
   final String id;
@@ -498,12 +655,16 @@ final class _MemorySyncSource implements SyncSource {
 
   final bool rootIsNull;
 
+  final List<ConfigRecord> configs;
   final BlobIndex index;
   final Map<SyncBlobId, SyncBlob> _blobs;
   final List<SyncBlob> pushed = <SyncBlob>[];
+  int rootLookups = 0;
 
   @override
-  Future<List<ConfigRecord>> getConfigs() async => const <ConfigRecord>[];
+  Future<List<ConfigRecord>> getConfigs() async {
+    return List<ConfigRecord>.from(configs);
+  }
 
   @override
   Future<MessageIndexNode?> getMessageIndexNode(MessageIndexNodeId id) async {
@@ -512,6 +673,7 @@ final class _MemorySyncSource implements SyncSource {
 
   @override
   Future<MessageIndexNode?> getMessageIndexRoot() async {
+    rootLookups++;
     if (rootIsNull) {
       return null;
     }
@@ -533,6 +695,50 @@ final class _MemorySyncSource implements SyncSource {
     index.add(
         blob.id, encryptedMessageFromPowEnvelope(blob.payload).expiresTime);
   }
+
+  @override
+  Future<List<String>> discoverPeers() async => const <String>[];
+
+  @override
+  void stop() {}
+}
+
+final class _FixedTreeSource implements SyncSource {
+  const _FixedTreeSource({
+    required this.root,
+    required this.nodes,
+  });
+
+  final MessageIndexNode root;
+  final Map<MessageIndexNodeId, MessageIndexNode> nodes;
+
+  @override
+  String get id => 'fixed-tree';
+
+  @override
+  SyncSourceFlags get flags => const SyncSourceFlags(syncSourceFlagSupportTree);
+
+  @override
+  Future<List<ConfigRecord>> getConfigs() async => const <ConfigRecord>[];
+
+  @override
+  Future<MessageIndexNode?> getMessageIndexRoot() async => root;
+
+  @override
+  Future<MessageIndexNode?> getMessageIndexNode(MessageIndexNodeId id) async {
+    return nodes[id];
+  }
+
+  @override
+  Future<List<SyncBlob?>> getSyncBlobs(List<SyncBlobId> ids) async {
+    return List<SyncBlob?>.filled(ids.length, null);
+  }
+
+  @override
+  Future<void> push(
+    SyncBlob blob, {
+    ImportValidationContext? validationContext,
+  }) async {}
 
   @override
   Future<List<String>> discoverPeers() async => const <String>[];

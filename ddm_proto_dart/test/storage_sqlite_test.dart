@@ -2,11 +2,15 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
 void main() {
   test('open seeds default config record', () {
-    final storage = _openStorage();
+    final dir = Directory.systemTemp.createTempSync('ddm-proto-storage-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final dbPath = '${dir.path}/$defaultFileName';
+    final storage = DdmSqliteStorage.open(dbPath);
     addTearDown(storage.close);
 
     final records = storage.configs.listConfigRecords();
@@ -14,10 +18,78 @@ void main() {
 
     final seeded = records.first;
     final expected = ConfigRepository.defaultConfigRecord;
-    expect(seeded.seqNo, expected.seqNo);
-    expect(seeded.activeFrom, expected.activeFrom);
-    expect(seeded.record.version, expected.record.version);
-    expect(seeded.record.payload, expected.record.payload);
+    expect(seeded.toBytes(), expected.toBytes());
+    storage.close();
+
+    final db = sqlite3.open(dbPath);
+    try {
+      final version =
+          db.select('SELECT number, dirty FROM schema_version LIMIT 1;').single;
+      expect(version['number'], 1);
+      expect(version['dirty'], 0);
+      final config = db.select('SELECT seqno FROM config LIMIT 1;').single;
+      expect(config['seqno'], 1903);
+    } finally {
+      db.dispose();
+    }
+  });
+
+  test('open rejects dirty migration state', () {
+    final dir = Directory.systemTemp.createTempSync('ddm-proto-storage-dirty-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final dbPath = '${dir.path}/$defaultFileName';
+    final db = sqlite3.open(dbPath);
+    try {
+      db.execute('''
+CREATE TABLE schema_version (
+  number INTEGER NOT NULL,
+  dirty BOOLEAN NOT NULL
+);
+''');
+      db.execute('INSERT INTO schema_version(number, dirty) VALUES(1, TRUE);');
+    } finally {
+      db.dispose();
+    }
+
+    expect(
+      () => DdmSqliteStorage.open(dbPath),
+      throwsA(
+        isA<DatabaseMigrationException>().having(
+          (error) => error.toString(),
+          'message',
+          contains('dirty at version 1'),
+        ),
+      ),
+    );
+  });
+
+  test('open rejects newer schema version', () {
+    final dir = Directory.systemTemp.createTempSync('ddm-proto-storage-newer-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final dbPath = '${dir.path}/$defaultFileName';
+    final db = sqlite3.open(dbPath);
+    try {
+      db.execute('''
+CREATE TABLE schema_version (
+  number INTEGER NOT NULL,
+  dirty BOOLEAN NOT NULL
+);
+''');
+      db.execute('INSERT INTO schema_version(number, dirty) VALUES(2, FALSE);');
+    } finally {
+      db.dispose();
+    }
+
+    expect(
+      () => DdmSqliteStorage.open(dbPath),
+      throwsA(
+        isA<DatabaseMigrationException>().having(
+          (error) => error.toString(),
+          'message',
+          contains('newer than supported version 1'),
+        ),
+      ),
+    );
   });
 
   test('account create enforces case-insensitive duplicate names', () {
@@ -45,6 +117,47 @@ void main() {
         ),
       ),
       throwsA(isA<AccountNameExistsException>()),
+    );
+  });
+
+  test('contact upsert preserves discovered contact until approved', () {
+    final storage = _openStorage();
+    addTearDown(storage.close);
+
+    final account = _testAddress(0x10).toText();
+    final address = _testAddress(0x20).toText();
+    final discovered = storage.contacts.upsertContact(
+      ContactInsert(address: address, account: account),
+    );
+
+    expect(discovered.address, address);
+    expect(discovered.account, account);
+    expect(discovered.name, isEmpty);
+    expect(discovered.approved, isFalse);
+    expect(discovered.lastDeliveryTime, isEmpty);
+    expect(discovered.trust, 0);
+
+    final approved = storage.contacts.upsertContact(
+      ContactInsert(
+        address: address,
+        account: account,
+        name: 'Bob',
+        approved: true,
+      ),
+    );
+
+    expect(approved.id, discovered.id);
+    expect(approved.name, 'Bob');
+    expect(approved.approved, isTrue);
+    expect(storage.contacts.listContacts(account), hasLength(1));
+    expect(
+      storage.contacts.deleteContact(account: account, address: address),
+      isTrue,
+    );
+    expect(storage.contacts.listContacts(account), isEmpty);
+    expect(
+      storage.contacts.deleteContact(account: account, address: address),
+      isFalse,
     );
   });
 
@@ -118,6 +231,14 @@ void main() {
 
     expect(storage.messages.countMessagesByRecipientAddress(recipientX), 2);
     expect(storage.messages.countMessagesBySenderAddress(senderA), 2);
+
+    expect(storage.messages.deleteMessageById(first.id), isTrue);
+    expect(storage.messages.getMessageById(first.id), isNull);
+    expect(storage.messages.deleteMessageById(first.id), isFalse);
+    expect(
+      storage.messages.listMessagesByRecipientAddress(recipientX).single.id,
+      third.id,
+    );
   });
 
   test('sync blob dedup, index preload and expiry cleanup are preserved', () {

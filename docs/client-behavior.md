@@ -62,3 +62,32 @@ Client behavior requirement:
 2. the client MUST show a persistent and explicit upgrade prompt;
 3. the prompt SHOULD state that protocol safety may be degraded until the
    client is updated.
+
+## 4. Sync Source Check
+
+The source check is an optional preflight for large remote message-index trees.
+It protects a client from a source that advertises a large root only to force the
+client into revealing a narrow address prefix during partial synchronization.
+
+The default check uses 20 independent samples. Empty roots are accepted as a
+no-op, but clients normally SHOULD skip the check for an empty root.
+
+The client first reads the source root. For each sample, the client:
+
+1. chooses a random integer `rank` in `[0, root.children_count)`;
+2. walks the augmented nibble tree by treating `children_count` as subtree
+   weights;
+3. at each branch, requests all referenced direct children, validates every
+   child, verifies every child hash against the referenced child id, verifies
+   that each child belongs to its parent slot, and verifies that the sum of
+   direct child subtree sizes equals the parent `children_count`;
+4. chooses the child whose cumulative subtree range contains `rank`;
+5. at a leaf, requests the referenced sync blob and validates its canonical
+   encoding, proof of work, id, and expiry;
+6. verifies that the leaf TTL equals the blob `expires_time`.
+
+This is an order-statistics walk. Every leaf has equal probability of being
+sampled regardless of tree depth. Clients SHOULD fail the check on the first
+invalid response. Source availability and request failures MUST remain distinct
+from invalid source responses so callers can apply different retry and rating
+policies.

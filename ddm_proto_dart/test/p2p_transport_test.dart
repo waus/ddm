@@ -182,7 +182,7 @@ void main() {
     final sourceB = _MemorySyncSource(
       id: 'source-b',
       configs: <ConfigRecord>[
-        ConfigRecord(version: 1, payload: Uint8List.fromList(<int>[7, 8, 9])),
+        parseConfigRecord(Uint8List.fromList(<int>[0x82, 0x01, 7, 8, 9])),
       ],
       blobs: <SyncBlob>[blob],
     );
@@ -208,7 +208,7 @@ void main() {
 
     final configs = await peer.getConfigs();
     expect(configs, hasLength(1));
-    expect(configs.single.payload, <int>[7, 8, 9]);
+    expect(configRecordPayload(configs.single), <int>[7, 8, 9]);
 
     final root = await peer.getMessageIndexRoot();
     expect(root, isNotNull);

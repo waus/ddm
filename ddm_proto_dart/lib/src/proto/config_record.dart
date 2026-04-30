@@ -6,13 +6,53 @@ import 'package:ddm_proto_dart/src/proto/cose_sign1.dart';
 import 'package:ddm_proto_dart/src/proto/ddm_cbor_codec.dart';
 
 final class ConfigRecord {
-  ConfigRecord({required this.version, required Uint8List payload})
-      : payload = copyBytes(payload);
+  ConfigRecord._(this._bytes);
 
-  final int version;
-  final Uint8List payload;
+  final Uint8List _bytes;
 
-  ConfigRecord clone() => ConfigRecord(version: version, payload: payload);
+  Uint8List toBytes() => copyBytes(_bytes);
+}
+
+ConfigRecord parseConfigRecord(Uint8List blob) {
+  _configRecordPayloadOffset(blob);
+  return ConfigRecord._(copyBytes(blob));
+}
+
+int configRecordVersion(ConfigRecord record) {
+  final bytes = record._bytes;
+  if (bytes[1] < 0x18) {
+    return bytes[1];
+  }
+  return bytes[2];
+}
+
+Uint8List configRecordPayload(ConfigRecord record) {
+  final offset = _configRecordPayloadOffset(record._bytes);
+  return copyBytes(Uint8List.sublistView(record._bytes, offset));
+}
+
+int _configRecordPayloadOffset(Uint8List blob) {
+  if (blob.length > maxConfigPayloadBytes) {
+    throw FormatException(
+      'config record exceeds limit: got ${blob.length} bytes, max $maxConfigPayloadBytes',
+    );
+  }
+  if (blob.length < 3 || blob[0] != 0x82) {
+    throw const FormatException('decode config record');
+  }
+  late final int payloadOffset;
+  if (blob[1] < 0x18) {
+    payloadOffset = 2;
+  } else if (blob[1] == 0x18 && blob.length >= 4) {
+    payloadOffset = 3;
+  } else {
+    throw const FormatException('decode config record version');
+  }
+  final payload = Uint8List.sublistView(blob, payloadOffset);
+  if (payload.isEmpty) {
+    throw const FormatException('config payload must not be empty');
+  }
+  return payloadOffset;
 }
 
 final class ConfigV1Core {

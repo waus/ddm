@@ -2,12 +2,13 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ddm_proto_dart/src/proto/address.dart';
+import 'package:ddm_proto_dart/src/proto/config_manager.dart';
 import 'package:ddm_proto_dart/src/proto/config_record.dart';
-import 'package:ddm_proto_dart/src/proto/constants.dart';
 import 'package:ddm_proto_dart/src/proto/message_types.dart';
 import 'package:ddm_proto_dart/src/proto/stream.dart';
 import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 import 'package:ddm_proto_dart/src/storage/constants.dart';
+import 'package:ddm_proto_dart/src/storage/migrations.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 typedef UtcNow = DateTime Function();
@@ -15,6 +16,7 @@ typedef UtcNow = DateTime Function();
 final class DdmSqliteStorage {
   DdmSqliteStorage._(this._db, UtcNow nowUtc)
       : accounts = AccountsRepository._(_db, nowUtc),
+        contacts = ContactsRepository._(_db, nowUtc),
         configs = ConfigRepository._(_db, nowUtc),
         messages = MessagesRepository._(_db),
         syncBlobs = SyncBlobsRepository._(_db),
@@ -25,6 +27,7 @@ final class DdmSqliteStorage {
   bool _closed = false;
 
   final AccountsRepository accounts;
+  final ContactsRepository contacts;
   final ConfigRepository configs;
   final MessagesRepository messages;
   final SyncBlobsRepository syncBlobs;
@@ -38,10 +41,8 @@ final class DdmSqliteStorage {
     final db = sqlite3.open(dbPath);
     final now = nowUtc ?? _defaultUtcNow;
     try {
-      _initSchema(db);
-      final storage = DdmSqliteStorage._(db, now);
-      storage.configs._ensureDefaultConfigRecord();
-      return storage;
+      runStorageMigrations(db);
+      return DdmSqliteStorage._(db, now);
     } catch (_) {
       db.dispose();
       rethrow;
@@ -54,12 +55,6 @@ final class DdmSqliteStorage {
     }
     _closed = true;
     _db.dispose();
-  }
-
-  static void _initSchema(Database db) {
-    for (final statement in schemaStatements) {
-      db.execute(statement);
-    }
   }
 }
 
@@ -256,71 +251,181 @@ ORDER BY id ASC;
   }
 }
 
-final class ConfigStoredRecord {
-  ConfigStoredRecord({
-    required this.seqNo,
-    required DateTime activeFrom,
-    required this.record,
-  }) : activeFrom = activeFrom.toUtc();
+final class ContactInsert {
+  ContactInsert({
+    required this.address,
+    required this.account,
+    this.name = '',
+    this.approved = false,
+    this.lastDeliveryTime = '',
+    this.trust = 0,
+    this.createdAt,
+    this.updatedAt,
+  });
 
-  final int seqNo;
-  final DateTime activeFrom;
-  final ConfigRecord record;
+  final String address;
+  final String account;
+  final String name;
+  final bool approved;
+  final String lastDeliveryTime;
+  final int trust;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 }
 
-final class ConfigRepository {
+final class ContactRecord {
+  ContactRecord({
+    required this.id,
+    required this.address,
+    required this.account,
+    required this.name,
+    required this.approved,
+    required this.lastDeliveryTime,
+    required this.trust,
+    required DateTime createdAt,
+    required DateTime updatedAt,
+  })  : createdAt = createdAt.toUtc(),
+        updatedAt = updatedAt.toUtc();
+
+  final int id;
+  final String address;
+  final String account;
+  final String name;
+  final bool approved;
+  final String lastDeliveryTime;
+  final int trust;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+}
+
+final class ContactsRepository {
+  ContactsRepository._(this._db, this._nowUtc);
+
+  final Database _db;
+  final UtcNow _nowUtc;
+
+  ContactRecord upsertContact(ContactInsert input) {
+    final address = input.address.trim();
+    if (address.isEmpty) {
+      throw const FormatException('contact address must not be empty');
+    }
+    final account = input.account.trim();
+    if (account.isEmpty) {
+      throw const FormatException('contact account must not be empty');
+    }
+    final createdAt = (input.createdAt ?? _nowUtc()).toUtc();
+    final updatedAt = (input.updatedAt ?? _nowUtc()).toUtc();
+
+    _db.execute(
+      '''
+INSERT INTO contacts(address, account, name, approved, last_delivery_time, trust, created_at, updated_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(address, account) DO UPDATE SET
+  name = CASE WHEN excluded.approved != 0 THEN excluded.name ELSE contacts.name END,
+  approved = CASE WHEN excluded.approved != 0 THEN 1 ELSE contacts.approved END,
+  updated_at = CASE WHEN excluded.approved != 0 THEN excluded.updated_at ELSE contacts.updated_at END;
+''',
+      <Object?>[
+        address,
+        account,
+        input.name.trim(),
+        input.approved ? 1 : 0,
+        input.lastDeliveryTime,
+        input.trust,
+        _formatStoredTime(createdAt),
+        _formatStoredTime(updatedAt),
+      ],
+    );
+    final contact = getContact(account: account, address: address);
+    if (contact == null) {
+      throw StateError('contact was not stored');
+    }
+    return contact;
+  }
+
+  ContactRecord? getContact({
+    required String account,
+    required String address,
+  }) {
+    final rows = _db.select(
+      '''
+SELECT id, address, account, name, approved, last_delivery_time, trust, created_at, updated_at
+FROM contacts
+WHERE account = ? AND address = ?;
+''',
+      <Object?>[account.trim(), address.trim()],
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    return _scanContact(rows.first);
+  }
+
+  List<ContactRecord> listContacts(String account) {
+    final rows = _db.select(
+      '''
+SELECT id, address, account, name, approved, last_delivery_time, trust, created_at, updated_at
+FROM contacts
+WHERE account = ?
+ORDER BY name COLLATE NOCASE ASC, created_at ASC, id ASC;
+''',
+      <Object?>[account.trim()],
+    );
+    return rows.map(_scanContact).toList(growable: false);
+  }
+
+  bool deleteContact({
+    required String account,
+    required String address,
+  }) {
+    final rows = _db.select(
+      '''
+DELETE FROM contacts
+WHERE account = ? AND address = ?
+RETURNING id;
+''',
+      <Object?>[account.trim(), address.trim()],
+    );
+    return rows.isNotEmpty;
+  }
+
+  ContactRecord _scanContact(Row row) {
+    return ContactRecord(
+      id: _asInt(row['id'], 'contact id'),
+      address: _asString(row['address'], 'contact address'),
+      account: _asString(row['account'], 'contact account'),
+      name: _asString(row['name'], 'contact name'),
+      approved: _asInt(row['approved'], 'contact approved') != 0,
+      lastDeliveryTime: _asString(
+        row['last_delivery_time'],
+        'contact last_delivery_time',
+      ),
+      trust: _asInt(row['trust'], 'contact trust'),
+      createdAt: _parseStoredTime(
+        _asString(row['created_at'], 'contact created_at'),
+        'contact created_at',
+      ),
+      updatedAt: _parseStoredTime(
+        _asString(row['updated_at'], 'contact updated_at'),
+        'contact updated_at',
+      ),
+    );
+  }
+}
+
+final class ConfigRepository implements ConfigManagerStorage {
   ConfigRepository._(this._db, this._nowUtc);
 
   final Database _db;
   final UtcNow _nowUtc;
 
-  static final ConfigStoredRecord defaultConfigRecord =
-      _buildDefaultConfigRecord();
+  static final ConfigRecord defaultConfigRecord = _buildDefaultConfigRecord();
 
-  void _ensureDefaultConfigRecord() {
-    final record = defaultConfigRecord;
-    _db.execute(
-      '''
-INSERT INTO config(seqno, active_from, version, payload, created_at)
-SELECT ?, ?, ?, ?, ?
-WHERE NOT EXISTS (SELECT 1 FROM config);
-''',
-      <Object?>[
-        record.seqNo,
-        _formatStoredTime(record.activeFrom),
-        record.record.version,
-        Uint8List.fromList(record.record.payload),
-        _formatStoredTime(_nowUtc()),
-      ],
-    );
-  }
-
-  Future<void> upsertConfigRecord(ConfigStoredRecord record) async {
-    final validated = await _validateStoredConfigRecord(record);
-
-    _db.execute(
-      '''
-INSERT INTO config(seqno, active_from, version, payload, created_at)
-VALUES(?, ?, ?, ?, ?)
-ON CONFLICT(seqno) DO UPDATE SET
-  active_from = excluded.active_from,
-  version = excluded.version,
-  payload = excluded.payload;
-''',
-      <Object?>[
-        validated.seqNo,
-        _formatStoredTime(validated.activeFrom),
-        validated.record.version,
-        Uint8List.fromList(validated.record.payload),
-        _formatStoredTime(_nowUtc()),
-      ],
-    );
-  }
-
-  List<ConfigStoredRecord> listConfigRecords() {
+  @override
+  List<ConfigRecord> listConfigRecords() {
     final rows = _db.select(
       '''
-SELECT seqno, active_from, version, payload
+SELECT payload
 FROM config
 ORDER BY seqno ASC;
 ''',
@@ -328,112 +433,39 @@ ORDER BY seqno ASC;
     return rows.map(_scanConfigRecord).toList(growable: false);
   }
 
-  ConfigStoredRecord? getActiveConfigRecord(DateTime now) {
-    final rows = _db.select(
+  @override
+  void insertConfigRecord(ConfigRecord record, ConfigV1Core config) {
+    _db.execute(
       '''
-SELECT seqno, active_from, version, payload
-FROM config
-WHERE active_from <= ?
-ORDER BY seqno DESC
-LIMIT 1;
+INSERT INTO config(seqno, payload, created_at)
+VALUES(?, ?, ?);
 ''',
-      <Object?>[_formatStoredTime(now.toUtc())],
-    );
-    if (rows.isEmpty) {
-      return null;
-    }
-    return _scanConfigRecord(rows.first);
-  }
-
-  ConfigStoredRecord _scanConfigRecord(Row row) {
-    final seqNo = _asInt(row['seqno'], 'config seqno');
-    final version = _asInt(row['version'], 'config version');
-    if (seqNo < 0) {
-      throw FormatException('config seqno must be >= 0, got $seqNo');
-    }
-    if (version < 0 || version > 255) {
-      throw FormatException('config version must be in [0..255], got $version');
-    }
-
-    return ConfigStoredRecord(
-      seqNo: seqNo,
-      activeFrom: _parseStoredTime(
-        _asString(row['active_from'], 'config active_from'),
-        'config active_from',
-      ),
-      record: ConfigRecord(
-        version: version,
-        payload: _asBytes(row['payload'], 'config payload'),
-      ),
+      <Object?>[
+        config.seqNo,
+        record.toBytes(),
+        _formatStoredTime(_nowUtc()),
+      ],
     );
   }
 
-  Future<ConfigStoredRecord> _validateStoredConfigRecord(
-    ConfigStoredRecord record,
-  ) async {
-    if (record.seqNo < 0) {
-      throw FormatException('seqno must be >= 0, got ${record.seqNo}');
-    }
-    if (record.activeFrom.millisecondsSinceEpoch == 0) {
-      throw FormatException('active_from must not be zero');
-    }
-    if (record.record.payload.isEmpty) {
-      throw FormatException('config payload must not be empty');
-    }
-    if (record.record.version != configRecordVersionV1) {
-      throw FormatException(
-        'unknown config record version ${record.record.version}; please update the client',
-      );
-    }
-
-    final payload = ConfigV1Payload.fromBytes(record.record.payload);
-    await payload.verifySignature(_defaultConfigAdminPublicKey);
-
-    final payloadSeqNo = payload.core.seqNo;
-    final payloadActiveFrom = DateTime.fromMillisecondsSinceEpoch(
-      payload.core.activeFromUnix * 1000,
-      isUtc: true,
+  @override
+  void deleteConfigRecordsBeforeSeqNo(int seqNo) {
+    _db.execute(
+      'DELETE FROM config WHERE seqno < ?;',
+      <Object?>[seqNo],
     );
+  }
 
-    if (payloadSeqNo != record.seqNo) {
-      throw FormatException(
-        'config seqno mismatch: payload=$payloadSeqNo arg=${record.seqNo}',
-      );
-    }
-    if (payloadActiveFrom != record.activeFrom.toUtc()) {
-      throw FormatException(
-        'config active_from mismatch: payload=${_formatStoredTime(payloadActiveFrom)} arg=${_formatStoredTime(record.activeFrom.toUtc())}',
-      );
-    }
-
-    return ConfigStoredRecord(
-      seqNo: record.seqNo,
-      activeFrom: record.activeFrom.toUtc(),
-      record: ConfigRecord(
-        version: record.record.version,
-        payload: record.record.payload,
-      ),
-    );
+  ConfigRecord _scanConfigRecord(Row row) {
+    return parseConfigRecord(_asBytes(row['payload'], 'config payload'));
   }
 }
 
-final Uint8List _defaultConfigAdminPublicKey = _decodeHex(
-  'd9bf2148748a85c89da5aad8ee0b0fc2d105fd39d41a4c796536354f0ae2900c',
-);
-
-ConfigStoredRecord _buildDefaultConfigRecord() {
-  final payload = _decodeHex(
-    'd28443a10127a058918519076f1a659431801903e8191ccd5880dff91e2d2fe04b05c94cd448db087c86c1e8a3aa27147cc6a6a29bfb3dad8d85b24e4a4cc2a1a06531603f15f5a41d52b63a53a6d60d647faeb169a12e78d900f22c14bb32e18ab9d99d37403c1860d5b84c6fc0b53b462b9ef193762a84efe6872f72348e210e0584d521a26ee9f983473e2feefe1ff5470abf0f13ea3e8bbd58409fa95a44b0ef9f2ba30a0f389896696ae602067f7f4235afd0e0ec9a269f6071b2e0fe5b01be5f9fd6ce1a29a86b65f45524c44c11d85fbf14609ee04c2cdc06',
-  );
-  final parsed = ConfigV1Payload.fromBytes(payload);
-
-  return ConfigStoredRecord(
-    seqNo: parsed.core.seqNo,
-    activeFrom: DateTime.fromMillisecondsSinceEpoch(
-      parsed.core.activeFromUnix * 1000,
-      isUtc: true,
+ConfigRecord _buildDefaultConfigRecord() {
+  return parseConfigRecord(
+    _decodeHex(
+      '8201d28443a10127a058918519076f1a659431801903e8191ccd5880dff91e2d2fe04b05c94cd448db087c86c1e8a3aa27147cc6a6a29bfb3dad8d85b24e4a4cc2a1a06531603f15f5a41d52b63a53a6d60d647faeb169a12e78d900f22c14bb32e18ab9d99d37403c1860d5b84c6fc0b53b462b9ef193762a84efe6872f72348e210e0584d521a26ee9f983473e2feefe1ff5470abf0f13ea3e8bbd58409fa95a44b0ef9f2ba30a0f389896696ae602067f7f4235afd0e0ec9a269f6071b2e0fe5b01be5f9fd6ce1a29a86b65f45524c44c11d85fbf14609ee04c2cdc06',
     ),
-    record: ConfigRecord(version: configRecordVersionV1, payload: payload),
   );
 }
 
@@ -573,6 +605,15 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       'UPDATE messages SET is_read = 1 WHERE id = ?;',
       <Object?>[messageId.toBytes()],
     );
+  }
+
+  bool deleteMessageById(MessageId messageId) {
+    _db.execute(
+      'DELETE FROM messages WHERE id = ?;',
+      <Object?>[messageId.toBytes()],
+    );
+    final changed = _db.select('SELECT changes() AS n;');
+    return _asInt(changed.first['n'], 'deleted messages count') > 0;
   }
 
   MessageRecord? getMessageById(MessageId messageId) {

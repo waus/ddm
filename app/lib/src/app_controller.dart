@@ -6,10 +6,12 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'app_state.dart';
 import 'constants.dart';
 import 'macos_file_picker.dart';
+import 'update_service.dart';
 
 typedef AppPowVerifier = FutureOr<bool> Function({
   required List<int> modulus,
@@ -20,6 +22,11 @@ typedef AppPowVerifier = FutureOr<bool> Function({
 });
 
 typedef ExternalPowerCheck = Future<bool> Function();
+typedef AppVersionLoader = Future<AppVersion> Function();
+typedef UpdateChecker = Future<UpdateCheckResult?> Function(
+  AppVersion currentVersion,
+);
+typedef UrlOpener = Future<bool> Function(Uri url);
 
 final class AppDependencies {
   const AppDependencies({
@@ -32,6 +39,9 @@ final class AppDependencies {
     this.noiseGeneratorTTL = defaultMessageTTL,
     this.noiseGeneratorMinPayloadBytes = defaultNoiseGeneratorMinPayloadBytes,
     this.noiseGeneratorMaxPayloadBytes = defaultNoiseGeneratorMaxPayloadBytes,
+    this.appVersionLoader = loadCurrentAppVersion,
+    this.updateChecker = checkForUpdate,
+    this.urlOpener = launchUrl,
   });
 
   final String? workspacePath;
@@ -43,6 +53,9 @@ final class AppDependencies {
   final Duration noiseGeneratorTTL;
   final int noiseGeneratorMinPayloadBytes;
   final int noiseGeneratorMaxPayloadBytes;
+  final AppVersionLoader appVersionLoader;
+  final UpdateChecker updateChecker;
+  final UrlOpener urlOpener;
 }
 
 final appDependenciesProvider = Provider<AppDependencies>((ref) {
@@ -77,10 +90,12 @@ final class AppController extends StateNotifier<AppState> {
   bool _outboxPublishRunning = false;
   bool _outboxPublishRequested = false;
   bool _noiseGeneratorRunning = false;
+  bool _updateCheckRunning = false;
   bool _closed = false;
 
   Future<void> initialize() async {
     try {
+      await _loadAppVersion();
       final workspacePath =
           _dependencies.workspacePath ?? await _defaultWorkspacePath();
       final core = DdmCore.open(
@@ -95,6 +110,7 @@ final class AppController extends StateNotifier<AppState> {
       if (core.runtimeOptions.transports.backgroundSyncEnabled) {
         unawaited(_startBackgroundSync(core));
       }
+      unawaited(_checkForUpdate());
     } catch (error) {
       state = state.copyWith(
         status: AppLoadStatus.failed,
@@ -126,6 +142,7 @@ final class AppController extends StateNotifier<AppState> {
     state = state.copyWith(
       section: AppSection.mailbox,
       selectedAccount: account,
+      contacts: core.contacts.listContacts(account),
       messages: messages,
       clearSelectedMessage: true,
       clearError: true,
@@ -140,6 +157,9 @@ final class AppController extends StateNotifier<AppState> {
       section: AppSection.mailbox,
       mailbox: mailbox,
       selectedAccount: account,
+      contacts: account == null
+          ? const <ContactRecord>[]
+          : core.contacts.listContacts(account),
       messages: account == null
           ? const <MessageRecord>[]
           : core.accounts.listMailboxMessages(account, mailbox),
@@ -155,6 +175,7 @@ final class AppController extends StateNotifier<AppState> {
       section: AppSection.mailbox,
       mailbox: mailbox,
       selectedAccount: account,
+      contacts: core.contacts.listContacts(account),
       messages: core.accounts.listMailboxMessages(account, mailbox),
       clearSelectedMessage: true,
       clearError: true,
@@ -230,6 +251,7 @@ final class AppController extends StateNotifier<AppState> {
         section: AppSection.mailbox,
         mailbox: Mailbox.outbox,
         selectedAccount: sender,
+        contacts: core.contacts.listContacts(sender),
         messages: messages,
         clearSelectedMessage: true,
         clearError: true,
@@ -243,6 +265,107 @@ final class AppController extends StateNotifier<AppState> {
     } catch (error) {
       state = state.copyWith(errorMessage: error.toString());
     }
+  }
+
+  Future<bool> addContact({
+    required AccountRecord account,
+    required String name,
+    required String address,
+  }) async {
+    final core = _requireCore();
+    try {
+      core.contacts.addContact(
+        account: account,
+        name: name,
+        address: Address.fromText(address),
+      );
+      final selected = state.selectedAccount ?? account;
+      state = state.copyWith(
+        selectedAccount: selected,
+        contacts: core.contacts.listContacts(selected),
+        clearError: true,
+        sync: _diagnostics(core),
+      );
+      return true;
+    } catch (error) {
+      state = state.copyWith(errorMessage: error.toString());
+      return false;
+    }
+  }
+
+  Future<bool> deleteContact({
+    required AccountRecord account,
+    required String address,
+  }) async {
+    final core = _requireCore();
+    try {
+      final deleted = core.contacts.deleteContact(
+        account: account,
+        address: Address.fromText(address),
+      );
+      final selected = state.selectedAccount ?? account;
+      state = state.copyWith(
+        selectedAccount: selected,
+        contacts: core.contacts.listContacts(selected),
+        clearError: true,
+        sync: _diagnostics(core),
+      );
+      return deleted;
+    } catch (error) {
+      state = state.copyWith(errorMessage: error.toString());
+      return false;
+    }
+  }
+
+  Future<bool> deleteMessages(List<MessageRecord> messages) async {
+    if (messages.isEmpty) {
+      return true;
+    }
+    final core = _requireCore();
+    final account = state.selectedAccount;
+    if (account == null) {
+      state = state.copyWith(errorMessage: 'Select an account first');
+      return false;
+    }
+    try {
+      final ids = messages.map((message) => message.id).toList(growable: false);
+      core.accounts.deleteLocalMessages(
+        account,
+        ids,
+        now: DateTime.now().toUtc(),
+      );
+      final nextMessages = core.accounts.listMailboxMessages(
+        account,
+        state.mailbox,
+      );
+      final selectedMessage = state.selectedMessage;
+      final selectedDeleted = selectedMessage != null &&
+          ids.any((messageId) => messageId == selectedMessage.id);
+      state = state.copyWith(
+        messages: nextMessages,
+        clearSelectedMessage: selectedDeleted,
+        clearError: true,
+        sync: _diagnostics(core),
+      );
+      return true;
+    } catch (error) {
+      state = state.copyWith(errorMessage: error.toString());
+      return false;
+    }
+  }
+
+  void refreshContacts(AccountRecord account) {
+    final core = _requireCore();
+    final local = _selectAccountById(core.accounts.listAccounts(), account.id);
+    if (local == null) {
+      return;
+    }
+    state = state.copyWith(
+      selectedAccount: local,
+      contacts: core.contacts.listContacts(local),
+      clearError: true,
+      sync: _diagnostics(core),
+    );
   }
 
   Future<void> addSource(String sourceText) async {
@@ -306,6 +429,13 @@ final class AppController extends StateNotifier<AppState> {
     );
   }
 
+  Future<void> openUpdateSite() async {
+    final opened = await _dependencies.urlOpener(Uri.parse(updateSiteUrl));
+    if (!opened && !_closed) {
+      state = state.copyWith(errorMessage: 'Could not open $updateSiteUrl');
+    }
+  }
+
   void refresh() {
     final core = _requireCore();
     _refreshState(core, section: state.section, clearError: true);
@@ -323,6 +453,39 @@ final class AppController extends StateNotifier<AppState> {
     _reliableDeliveryRetryTimer?.cancel();
     _noiseGeneratorTimer?.cancel();
     _core?.close();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final appVersion = await _dependencies.appVersionLoader();
+      if (!_closed) {
+        state = state.copyWith(appVersion: appVersion);
+      }
+    } catch (error) {
+      _appDebug('app version load failed error=$error');
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    final appVersion = state.appVersion;
+    if (_closed || _updateCheckRunning || appVersion == null) {
+      return;
+    }
+    _updateCheckRunning = true;
+    try {
+      final update = await _dependencies.updateChecker(appVersion);
+      if (_closed || update == null) {
+        return;
+      }
+      state = state.copyWith(
+        update: update.isNewerThan(appVersion.version) ? update : null,
+        clearUpdate: !update.isNewerThan(appVersion.version),
+      );
+    } catch (error) {
+      _appDebug('update check failed error=$error');
+    } finally {
+      _updateCheckRunning = false;
+    }
   }
 
   DdmCore _requireCore() {
@@ -343,10 +506,14 @@ final class AppController extends StateNotifier<AppState> {
     final messages = selected == null
         ? const <MessageRecord>[]
         : core.accounts.listMailboxMessages(selected, state.mailbox);
+    final contacts = selected == null
+        ? const <ContactRecord>[]
+        : core.contacts.listContacts(selected);
     state = state.copyWith(
       status: AppLoadStatus.ready,
       section: accounts.isEmpty ? AppSection.accounts : section,
       accounts: accounts,
+      contacts: contacts,
       selectedAccount: selected,
       clearSelectedAccount: selected == null,
       messages: messages,
@@ -369,6 +536,15 @@ final class AppController extends StateNotifier<AppState> {
       }
     }
     return accounts.first;
+  }
+
+  AccountRecord? _selectAccountById(List<AccountRecord> accounts, int id) {
+    for (final account in accounts) {
+      if (account.id == id) {
+        return account;
+      }
+    }
+    return null;
   }
 
   SyncDiagnostics _diagnostics(DdmCore core) {
@@ -491,7 +667,6 @@ final class AppController extends StateNotifier<AppState> {
     }
     _backgroundSyncRunning = true;
     try {
-      final config = core.config.loadActiveConfigCore(DateTime.now().toUtc());
       final sources = core.transports.sources.getActive(10);
       _appDebug(
         'background sync tick selected=${sources.length} '
@@ -506,7 +681,6 @@ final class AppController extends StateNotifier<AppState> {
           final before = core.sync.totalSyncedMessages;
           final receivedBlobs = await core.sync.importFrom(
             source: source,
-            currentConfig: config,
             verifyPow: _verifyPow,
           );
           final after = core.sync.totalSyncedMessages;
@@ -557,10 +731,8 @@ final class AppController extends StateNotifier<AppState> {
       _appDebug(
         'reliable delivery retry starting expired=${expired.length}',
       );
-      final config = core.config.loadActiveConfigCore(now);
       final published = await core.outbox.retryExpiredReliableDelivery(
         now: now,
-        activeConfig: config,
         pow: _dependencies.powService,
       );
       _appDebug(
@@ -601,9 +773,7 @@ final class AppController extends StateNotifier<AppState> {
       ),
     );
     try {
-      final config = core.config.loadActiveConfigCore(DateTime.now().toUtc());
       await core.outbox.publishEphemeralRandomMessage(
-        activeConfig: config,
         pow: _dependencies.powService,
         ttl: _dependencies.noiseGeneratorTTL,
         minPayloadBytes: _dependencies.noiseGeneratorMinPayloadBytes,
@@ -768,9 +938,7 @@ final class AppController extends StateNotifier<AppState> {
       ),
     );
     try {
-      final config = core.config.loadActiveConfigCore(DateTime.now().toUtc());
       final published = await core.outbox.publishPendingMessages(
-        activeConfig: config,
         pow: _dependencies.powService,
         onPowProgress: (progress) {
           if (_closed) {
@@ -852,10 +1020,14 @@ final class AppController extends StateNotifier<AppState> {
     final messages = selected == null
         ? const <MessageRecord>[]
         : core.accounts.listMailboxMessages(selected, state.mailbox);
+    final contacts = selected == null
+        ? const <ContactRecord>[]
+        : core.contacts.listContacts(selected);
     return state.copyWith(
       status: AppLoadStatus.ready,
       section: accounts.isEmpty ? AppSection.accounts : state.section,
       accounts: accounts,
+      contacts: contacts,
       selectedAccount: selected,
       clearSelectedAccount: selected == null,
       messages: messages,

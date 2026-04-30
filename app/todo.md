@@ -7,7 +7,7 @@ usable DDM Flutter application on top of the Dart core.
 
 - [x] Create the Flutter app entry point and base app shell.
 - [x] Set up app routing, screen structure, and navigation state.
-- [ ] Add configuration for environments, logging, and crash-safe startup.
+- [x] Add configuration for environments, logging, and crash-safe startup.
 - [x] Add a minimal design system: theme, spacing, typography, buttons, forms,
       lists, and status indicators.
 
@@ -23,14 +23,15 @@ usable DDM Flutter application on top of the Dart core.
 
 - [x] Define the local database schema for accounts, contacts, messages,
       deliveries, config snapshots, and app settings.
-- [ ] Add migrations and version handling for local storage.
+- [x] Add migrations and version handling for local storage.
 - [x] Add repositories/services for client-side reads and writes.
 
 ## 4. Contacts and Address Book
 
-- [ ] Add contact creation, editing, deletion, and local notes.
+- [x] Add contact creation, editing.
 - [ ] Expose address policy flags such as `ack-expected`.
 - [x] Add QR/share flows for exchanging addresses.
+- [ ] Create avatars based on https://github.com/kopianan/jazzicon (hash(recipient_address||our_private_pepper))
 
 ## 5. Messaging UX
 
@@ -38,7 +39,7 @@ usable DDM Flutter application on top of the Dart core.
 - [x] Build the conversation screen.
 - [x] Build the compose flow for a new message.
 - [x] Support text messages as the first message type.
-- [ ] Show message states: created, in-delivering, acknowledged, expired, delivered, received.
+- [x] Show message states: created, in-delivering, acknowledged, expired, delivered, received.
 
 ## 6. Message Submission and Outbox
 
@@ -55,10 +56,10 @@ usable DDM Flutter application on top of the Dart core.
 
 ## 8. Retry, TTL, and Delivery Policy
 
-- [ ] Implement the default ACK-based retry profile from
+- [x] Implement the default ACK-based retry profile from
       `docs/client-behavior.md`.
 - [x] Apply TTL jitter to default and explicit TTL values.
-- [ ] Stop retries immediately after a valid ACK is observed.
+- [x] Stop retries immediately after a valid ACK is observed.
 - [ ] Expose delivery policy details in settings and debug views.
 
 ## 9. Sync and Transport
@@ -66,15 +67,14 @@ usable DDM Flutter application on top of the Dart core.
 - [x] Define the client sync coordinator on top of `ddm_proto_dart`.
 - [x] Support online synchronization when network transport is available.
 - [ ] Support offline import/export flows for sync packages or files.
-- [ ] Track per-stream sync state and last successful progress.
 - [ ] Add source registration controls and background sync policy hooks.
 
 ## 10. Global Configuration
 
-- [ ] Fetch, validate, persist, and activate signed global config snapshots.
+- [x] Fetch, validate, persist, and activate signed global config snapshots.
 - [ ] Show the currently active config version and activation time.
 - [ ] Handle unknown config record versions with a persistent upgrade prompt.
-- [ ] Apply config-driven PoW and protocol parameters consistently.
+- [x] Apply config-driven PoW and protocol parameters consistently.
 
 ## 11. Privacy and Security UX
 

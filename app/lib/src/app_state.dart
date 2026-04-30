@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 
+import 'update_service.dart';
+
 enum AppLoadStatus { starting, ready, failed }
 
 enum AppSection { accounts, mailbox, compose, diagnostics }
@@ -63,22 +65,28 @@ final class AppState {
     this.section = AppSection.accounts,
     this.mailbox = Mailbox.inbox,
     this.accounts = const <AccountRecord>[],
+    this.contacts = const <ContactRecord>[],
     this.messages = const <MessageRecord>[],
     this.selectedAccount,
     this.selectedMessage,
     this.errorMessage,
     this.sync = const SyncDiagnostics(),
+    this.appVersion,
+    this.update,
   });
 
   final AppLoadStatus status;
   final AppSection section;
   final Mailbox mailbox;
   final List<AccountRecord> accounts;
+  final List<ContactRecord> contacts;
   final List<MessageRecord> messages;
   final AccountRecord? selectedAccount;
   final MessageRecord? selectedMessage;
   final String? errorMessage;
   final SyncDiagnostics sync;
+  final AppVersion? appVersion;
+  final UpdateCheckResult? update;
 
   bool get hasAccounts => accounts.isNotEmpty;
 
@@ -87,6 +95,7 @@ final class AppState {
     AppSection? section,
     Mailbox? mailbox,
     List<AccountRecord>? accounts,
+    List<ContactRecord>? contacts,
     List<MessageRecord>? messages,
     AccountRecord? selectedAccount,
     bool clearSelectedAccount = false,
@@ -95,12 +104,16 @@ final class AppState {
     String? errorMessage,
     bool clearError = false,
     SyncDiagnostics? sync,
+    AppVersion? appVersion,
+    UpdateCheckResult? update,
+    bool clearUpdate = false,
   }) {
     return AppState(
       status: status ?? this.status,
       section: section ?? this.section,
       mailbox: mailbox ?? this.mailbox,
       accounts: accounts ?? this.accounts,
+      contacts: contacts ?? this.contacts,
       messages: messages ?? this.messages,
       selectedAccount:
           clearSelectedAccount ? null : selectedAccount ?? this.selectedAccount,
@@ -108,6 +121,8 @@ final class AppState {
           clearSelectedMessage ? null : selectedMessage ?? this.selectedMessage,
       errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
       sync: sync ?? this.sync,
+      appVersion: appVersion ?? this.appVersion,
+      update: clearUpdate ? null : update ?? this.update,
     );
   }
 }
@@ -149,11 +164,48 @@ String messagePeer(MessageRecord message, Mailbox mailbox) {
       : message.recipientAddress;
 }
 
+String messagePeerLabel(
+  MessageRecord message,
+  Mailbox mailbox,
+  List<ContactRecord> contacts,
+) {
+  return contactDisplayName(contacts, messagePeer(message, mailbox));
+}
+
+String contactDisplayName(List<ContactRecord> contacts, String address) {
+  for (final contact in contacts) {
+    if (contact.address == address && contact.name.trim().isNotEmpty) {
+      return contact.name;
+    }
+  }
+  return address;
+}
+
 String messagePreview(MessageRecord message) {
   if (message.payloadType == MessageType.ack) {
     return 'Delivery acknowledgement';
   }
   return utf8.decode(message.payload, allowMalformed: true).trim();
+}
+
+String? messageDeletionBlockReason(MessageRecord message, DateTime now) {
+  if (canDeleteLocalMessage(message, now)) {
+    return null;
+  }
+  return 'Received messages can be deleted after they expire';
+}
+
+String? messageListDeletionBlockReason(
+  Iterable<MessageRecord> messages,
+  DateTime now,
+) {
+  for (final message in messages) {
+    final reason = messageDeletionBlockReason(message, now);
+    if (reason != null) {
+      return reason;
+    }
+  }
+  return null;
 }
 
 String shortText(String value, [int max = 18]) {

@@ -148,7 +148,7 @@ checksum = s
 
 ## 4. Global Configuration
 
-Global configuration is a versioned array of signed records:
+Global configuration is a versioned signed record:
 
 ```cddl
 u64 = 0..18446744073709551615
@@ -163,7 +163,6 @@ cose-sign1 = #6.18([
   signature: bstr
 ])
 
-config = [* config-record]
 config-record = config-record-v1
 
 config-record-v1 = [
@@ -204,8 +203,8 @@ The `COSE_Sign1` profile for the current protocol is:
 
 ### 4.2 Activation Rules
 
-Config records represent full snapshots, not patches. At evaluation time `t`,
-the active record is selected as:
+Config records represent full snapshots, not patches. A source may return more
+than one record. At evaluation time `t`, the active record is selected as:
 
 1. records with `active_from_unix <= t`;
 2. the record with the largest `seqno` among them.
@@ -442,8 +441,6 @@ address-v1 = [
   policy: address-policy,
   ed25519-pubkey: pubkey32
 ]
-
-config = [* config-record]
 
 config-record = config-record-v1
 config-record-v1 = [

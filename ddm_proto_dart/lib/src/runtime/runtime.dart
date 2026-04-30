@@ -9,6 +9,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:ddm_proto_dart/src/encryption/dage_ssh_ed25519.dart';
 import 'package:ddm_proto_dart/src/pow/pow_service.dart';
 import 'package:ddm_proto_dart/src/proto/address.dart';
+import 'package:ddm_proto_dart/src/proto/config_manager.dart';
 import 'package:ddm_proto_dart/src/proto/config_record.dart';
 import 'package:ddm_proto_dart/src/proto/constants.dart';
 import 'package:ddm_proto_dart/src/proto/envelope.dart';
@@ -79,6 +80,7 @@ final class DdmCore {
   DdmCore._({
     required DdmSqliteStorage storage,
     required this.accounts,
+    required this.contacts,
     required this.config,
     required this.messaging,
     required this.receive,
@@ -91,6 +93,7 @@ final class DdmCore {
 
   final DdmSqliteStorage _storage;
   final AccountsService accounts;
+  final ContactsService contacts;
   final ConfigService config;
   final MessagingService messaging;
   final ReceiveService receive;
@@ -146,12 +149,14 @@ final class DdmCore {
     final bytes = randomBytes ?? _secureRandomBytes;
     final ttlDraw = ttlJitterDraw ?? randomDurationUpToInclusive;
     final expiresDraw = expiresJitterDraw ?? randomDurationUpToInclusive;
-    final config = ConfigService(storage: storage);
+    final configManager = ConfigManager(storage: storage.configs, nowUtc: now);
+    final config = ConfigService(configs: configManager);
     final accounts = AccountsService(
       storage: storage,
       nowUtc: now,
       randomBytes: bytes,
     );
+    final contacts = ContactsService(storage: storage);
     final messaging = MessagingService(
       storage: storage,
       nowUtc: now,
@@ -160,6 +165,7 @@ final class DdmCore {
     final receive = ReceiveService(storage: storage, nowUtc: now);
     final sync = SyncService(
       storage: storage,
+      configs: configManager,
       nowUtc: now,
       onImportedBlob: receive.materializeImportedEncrypted,
     );
@@ -171,6 +177,7 @@ final class DdmCore {
       ttlJitterDraw: ttlDraw,
       expiresJitterDraw: expiresDraw,
       localSource: sync.localSource,
+      configs: configManager,
     );
     final p2pIdentity = P2pIdentityService(storage: storage);
     final transports = RuntimeTransportService(
@@ -185,6 +192,7 @@ final class DdmCore {
     final core = DdmCore._(
       storage: storage,
       accounts: accounts,
+      contacts: contacts,
       config: config,
       messaging: messaging,
       receive: receive,
@@ -194,7 +202,6 @@ final class DdmCore {
       p2pIdentity: p2pIdentity,
       runtimeOptions: runtimeOptions,
     );
-    core.config.loadActiveConfigCore(now());
     return core;
   }
 
@@ -525,6 +532,44 @@ final class AccountsService {
     _storage.messages.markMessageRead(messageId);
   }
 
+  int deleteLocalMessages(
+    AccountRecord account,
+    Iterable<MessageId> messageIds, {
+    required DateTime now,
+  }) {
+    final local = requireLocalAccount(account);
+    final messages = <MessageRecord>[];
+    for (final messageId in messageIds) {
+      final message = _storage.messages.getMessageById(messageId);
+      if (message == null) {
+        continue;
+      }
+      if (!_messageBelongsToAccount(message, local)) {
+        throw FormatException(
+          'message ${messageId.toHex()} does not belong to account ${local.address}',
+        );
+      }
+      if (!canDeleteLocalMessage(message, now)) {
+        throw FormatException(
+          'received message ${messageId.toHex()} cannot be deleted before it expires',
+        );
+      }
+      messages.add(message);
+    }
+    var deleted = 0;
+    for (final message in messages) {
+      if (_storage.messages.deleteMessageById(message.id)) {
+        deleted++;
+      }
+    }
+    return deleted;
+  }
+
+  bool _messageBelongsToAccount(MessageRecord message, AccountRecord account) {
+    return message.senderAddress == account.address ||
+        message.recipientAddress == account.address;
+  }
+
   AccountKeyExport exportAccountKeys(AccountRecord account) {
     final local = requireLocalAccount(account);
     return AccountKeyExport(
@@ -546,18 +591,67 @@ final class AccountsService {
   }
 }
 
-final class ConfigService {
-  ConfigService({required DdmSqliteStorage storage}) : _storage = storage;
+bool canDeleteLocalMessage(MessageRecord message, DateTime now) {
+  return message.state != messageStateReceived ||
+      !message.expiresAt.isAfter(now.toUtc());
+}
+
+final class ContactsService {
+  ContactsService({required DdmSqliteStorage storage}) : _storage = storage;
 
   final DdmSqliteStorage _storage;
 
-  ConfigV1Core loadActiveConfigCore(DateTime now) {
-    final record = _storage.configs.getActiveConfigRecord(now.toUtc());
-    if (record == null) {
-      throw const FormatException('active config record not found in storage');
+  ContactRecord addContact({
+    required AccountRecord account,
+    required String name,
+    required Address address,
+  }) {
+    final local = _requireLocalAccount(account);
+    return _storage.contacts.upsertContact(
+      ContactInsert(
+        address: address.toText(),
+        account: local.address,
+        name: name,
+        approved: true,
+      ),
+    );
+  }
+
+  List<ContactRecord> listContacts(AccountRecord account) {
+    final local = _requireLocalAccount(account);
+    return _storage.contacts.listContacts(local.address);
+  }
+
+  bool deleteContact({
+    required AccountRecord account,
+    required Address address,
+  }) {
+    final local = _requireLocalAccount(account);
+    return _storage.contacts.deleteContact(
+      account: local.address,
+      address: address.toText(),
+    );
+  }
+
+  AccountRecord _requireLocalAccount(AccountRecord account) {
+    final parsed = Address.fromText(account.address);
+    final local = _storage.accounts.getAccountByAddress(parsed.toText());
+    if (local == null) {
+      throw FormatException(
+        'account address ${parsed.toText()} not found in local db',
+      );
     }
-    final payload = ConfigV1Payload.fromBytes(record.record.payload);
-    return payload.core;
+    return local;
+  }
+}
+
+final class ConfigService {
+  ConfigService({required ConfigManager configs}) : _configs = configs;
+
+  final ConfigManager _configs;
+
+  ConfigV1Core loadActiveConfigCore(DateTime now) {
+    return _configs.configAtUnix(_unixSeconds(now));
   }
 }
 
@@ -674,6 +768,12 @@ final class MessagingService {
       streamId: recipient.streamId(),
     );
     _storage.messages.insertMessage(localMessage);
+    _storage.contacts.upsertContact(
+      ContactInsert(
+        address: recipientAddress,
+        account: localSender.address,
+      ),
+    );
     return localMessage;
   }
 }
@@ -788,6 +888,12 @@ final class ReceiveService {
       streamId: encrypted.streamNumber,
     );
     _storage.messages.insertMessage(inbound);
+    _storage.contacts.upsertContact(
+      ContactInsert(
+        address: decrypted.sender.toText(),
+        account: localRecipient.address,
+      ),
+    );
     await _publishEmbeddedAckForStoredMessage(
       decrypted.ackData,
       stored: inbound,
@@ -835,10 +941,12 @@ final class ReceiveService {
       return;
     }
 
+    final parsedAck = parseSyncBlobPayload(ackData);
+    final configTime = encryptedConfigTimeUnix(parsedAck.encrypted);
     final validated = await parseAndValidateBlob(
       blobPayload: ackData,
-      currentConfig: validationContext.currentConfig,
-      currentUnixSeconds: validationContext.currentUnixSeconds,
+      currentConfig: validationContext.configs.configAtUnix(configTime),
+      currentUnixSeconds: configTime,
       verifyPow: validationContext.verifyPow,
     );
     final record = SyncBlobRecord(
@@ -886,12 +994,14 @@ final class OutboxService {
     required RandomBytes randomBytes,
     required DurationJitterDraw ttlJitterDraw,
     required DurationJitterDraw expiresJitterDraw,
+    required ConfigManager configs,
     LocalSyncSource? localSource,
   })  : _storage = storage,
         _nowUtc = nowUtc,
         _randomBytes = randomBytes,
         _ttlJitterDraw = ttlJitterDraw,
         _expiresJitterDraw = expiresJitterDraw,
+        _configs = configs,
         _localSource = localSource;
 
   final DdmSqliteStorage _storage;
@@ -899,6 +1009,7 @@ final class OutboxService {
   final RandomBytes _randomBytes;
   final DurationJitterDraw _ttlJitterDraw;
   final DurationJitterDraw _expiresJitterDraw;
+  final ConfigManager _configs;
   final LocalSyncSource? _localSource;
 
   List<MessageRecord> listPendingMessages() {
@@ -910,7 +1021,6 @@ final class OutboxService {
   }
 
   Future<List<PublishedOutboxMessage>> publishPendingMessages({
-    required ConfigV1Core activeConfig,
     required PowService pow,
     RecipientPayloadEncryptor encrypt = encryptForRecipientWithDage,
     void Function(PowSolveProgress progress)? onPowProgress,
@@ -920,7 +1030,6 @@ final class OutboxService {
       out.add(
         await publishMessage(
           message.id,
-          activeConfig: activeConfig,
           pow: pow,
           encrypt: encrypt,
           onPowProgress: onPowProgress,
@@ -932,7 +1041,6 @@ final class OutboxService {
 
   Future<PublishedOutboxMessage> publishMessage(
     MessageId messageId, {
-    required ConfigV1Core activeConfig,
     required PowService pow,
     RecipientPayloadEncryptor encrypt = encryptForRecipientWithDage,
     void Function(PowSolveProgress progress)? onPowProgress,
@@ -945,7 +1053,6 @@ final class OutboxService {
     }
     return _publishStoredMessage(
       message,
-      activeConfig: activeConfig,
       pow: pow,
       encrypt: encrypt,
       onPowProgress: onPowProgress,
@@ -954,7 +1061,6 @@ final class OutboxService {
 
   Future<List<PublishedOutboxMessage>> retryExpiredReliableDelivery({
     required DateTime now,
-    required ConfigV1Core activeConfig,
     required PowService pow,
     RecipientPayloadEncryptor encrypt = encryptForRecipientWithDage,
     void Function(PowSolveProgress progress)? onPowProgress,
@@ -965,7 +1071,6 @@ final class OutboxService {
         out.add(
           await _publishStoredMessage(
             message,
-            activeConfig: activeConfig,
             pow: pow,
             encrypt: encrypt,
             onPowProgress: onPowProgress,
@@ -984,7 +1089,6 @@ final class OutboxService {
 
   Future<PublishedOutboxMessage> _publishStoredMessage(
     MessageRecord message, {
-    required ConfigV1Core activeConfig,
     required PowService pow,
     required RecipientPayloadEncryptor encrypt,
     required void Function(PowSolveProgress progress)? onPowProgress,
@@ -1029,7 +1133,6 @@ final class OutboxService {
         randomBytes: _randomBytes,
       );
       final ackPayload = await _buildPowEnvelopePayload(
-        activeConfig: activeConfig,
         pow: pow,
         encrypt: encrypt,
         messageId: ackMessageId,
@@ -1045,14 +1148,12 @@ final class OutboxService {
       );
       await _validatePreparedBlob(
         ackPayload.payload,
-        activeConfig: activeConfig,
         pow: pow,
       );
       ackData = ackPayload.payload;
     }
 
     final payload = await _buildPowEnvelopePayload(
-      activeConfig: activeConfig,
       pow: pow,
       encrypt: encrypt,
       messageId: message.id,
@@ -1090,7 +1191,6 @@ final class OutboxService {
   }
 
   Future<PublishedSyncBlob> publishEphemeralRandomMessage({
-    required ConfigV1Core activeConfig,
     required PowService pow,
     required Duration ttl,
     required int minPayloadBytes,
@@ -1142,7 +1242,6 @@ final class OutboxService {
     );
     final payload = _randomBytes(payloadLength);
     final prepared = await _buildPowEnvelopePayload(
-      activeConfig: activeConfig,
       pow: pow,
       encrypt: encrypt,
       messageId: messageId,
@@ -1158,7 +1257,6 @@ final class OutboxService {
     );
     await _validatePreparedBlob(
       prepared.payload,
-      activeConfig: activeConfig,
       pow: pow,
     );
     return _storePreparedBlob(
@@ -1217,7 +1315,6 @@ final class OutboxService {
   }
 
   Future<_PreparedPowEnvelopePayload> _buildPowEnvelopePayload({
-    required ConfigV1Core activeConfig,
     required PowService pow,
     required RecipientPayloadEncryptor encrypt,
     required MessageId messageId,
@@ -1255,6 +1352,8 @@ final class OutboxService {
       payload: encryptedPayload,
     );
     final encryptedObject = encrypted.toBytes();
+    final configTime = encryptedConfigTimeUnix(encrypted);
+    final activeConfig = _configs.configAtUnix(configTime);
     final difficulty = calculateDifficulty(
       base: activeConfig.powBaseTarget,
       scaleDivisor: activeConfig.powScaleDivisor,
@@ -1309,13 +1408,15 @@ final class OutboxService {
 
   Future<void> _validatePreparedBlob(
     Uint8List payload, {
-    required ConfigV1Core activeConfig,
     required PowService pow,
   }) async {
+    final configTime = encryptedConfigTimeUnix(
+      parseSyncBlobPayload(payload).encrypted,
+    );
     await parseAndValidateBlob(
       blobPayload: payload,
-      currentConfig: activeConfig,
-      currentUnixSeconds: _unixSeconds(_nowUtc()),
+      currentConfig: _configs.configAtUnix(configTime),
+      currentUnixSeconds: configTime,
       verifyPow: ({
         required Uint8List modulus,
         required Uint8List input,

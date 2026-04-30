@@ -50,9 +50,7 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
       - name: Build release APKs
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          flutter build apk --release --split-per-abi --build-name "$version" --build-number "${{ github.run_number }}"
+        run: flutter build apk --release --split-per-abi
       - name: Package artifacts
         run: |
           mkdir -p ../dist
@@ -85,9 +83,7 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
       - name: Build Linux release
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          flutter build linux --release --build-name "$version" --build-number "${{ github.run_number }}"
+        run: flutter build linux --release
       - name: Package artifact
         run: |
           test -x build/linux/x64/release/bundle/DDM
@@ -154,9 +150,7 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
       - name: Build macOS release
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          flutter build macos --release --build-name "$version" --build-number "${{ github.run_number }}"
+        run: flutter build macos --release
       - name: Package artifact
         run: |
           test -d build/macos/Build/Products/Release/DDM.app
@@ -189,10 +183,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
           $buildLog = '..\build\windows-build.log'
           New-Item -ItemType Directory -Force (Split-Path $buildLog)
-          flutter build windows --release --build-name $version --build-number "${{ github.run_number }}" --verbose *> $buildLog
+          flutter build windows --release --verbose *> $buildLog
           $exitCode = $LASTEXITCODE
           Get-Content $buildLog -Tail 300
           if ($exitCode -ne 0) {

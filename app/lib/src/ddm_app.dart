@@ -1,13 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 
 import 'app_controller.dart';
 import 'app_shortcuts.dart';
+import 'app_state.dart';
 import 'app_theme.dart';
 import 'desktop_layout.dart';
+import 'fatal_error_screen.dart';
 import 'mobile_layout.dart';
 import 'theme_mode_toggle.dart';
+import 'update_service.dart';
 
 const desktopLayoutMinWidth = 900.0;
 
@@ -137,6 +142,7 @@ final class AppShell extends ConsumerStatefulWidget {
 
 final class _AppShellState extends ConsumerState<AppShell> {
   static const _appMenuChannel = MethodChannel('ddm/app_menu');
+  String? _shownStartupUpdateVersion;
 
   @override
   void initState() {
@@ -165,13 +171,157 @@ final class _AppShellState extends ConsumerState<AppShell> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
+    final controller = ref.read(appControllerProvider.notifier);
+    if (state.status == AppLoadStatus.failed) {
+      return FatalErrorScreen(
+        title: 'Startup failed',
+        message: 'DDM cannot start.',
+        details: state.errorMessage ?? 'Unknown error',
+      );
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final isDesktopLayout = constraints.maxWidth >= desktopLayoutMinWidth;
+        _showStartupUpdateNotice(
+          state,
+          controller,
+          useDialog: isDesktopLayout,
+        );
         return isDesktopLayout
             ? DesktopLayout(state: state)
             : MobileLayout(state: state);
       },
+    );
+  }
+
+  void _showStartupUpdateNotice(
+    AppState state,
+    AppController controller, {
+    required bool useDialog,
+  }) {
+    final update = state.update;
+    if (update == null) {
+      return;
+    }
+    if (_shownStartupUpdateVersion == update.lastVersion) {
+      return;
+    }
+    _shownStartupUpdateVersion = update.lastVersion;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      if (useDialog) {
+        _showStartupUpdateDialog(update, controller);
+      } else {
+        _showStartupUpdateBanner(update, controller);
+      }
+    });
+  }
+
+  void _showStartupUpdateDialog(
+    UpdateCheckResult update,
+    AppController controller,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final foregroundColor =
+        update.mandatoryUpdate ? colorScheme.error : colorScheme.primary;
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          icon: Icon(
+            update.mandatoryUpdate
+                ? Icons.warning_amber_outlined
+                : Icons.info_outline,
+            color: foregroundColor,
+          ),
+          title: Text(
+            update.mandatoryUpdate ? 'Update required' : 'Update available',
+          ),
+          content: Text(
+            update.mandatoryUpdate
+                ? 'DDM ${update.lastVersion} is required.'
+                : 'DDM ${update.lastVersion} is available.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Dismiss'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                unawaited(controller.openUpdateSite());
+              },
+              icon: const Icon(Icons.upgrade),
+              label: const Text('Update'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showStartupUpdateBanner(
+    UpdateCheckResult update,
+    AppController controller,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final backgroundColor = update.mandatoryUpdate
+        ? colorScheme.errorContainer
+        : colorScheme.primaryContainer;
+    final foregroundColor = update.mandatoryUpdate
+        ? colorScheme.onErrorContainer
+        : colorScheme.onPrimaryContainer;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentMaterialBanner();
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        backgroundColor: backgroundColor,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        leadingPadding: const EdgeInsets.only(left: 4, right: 8),
+        leading: Icon(
+          update.mandatoryUpdate
+              ? Icons.warning_amber_outlined
+              : Icons.info_outline,
+          size: 20,
+          color: foregroundColor,
+        ),
+        content: Text(
+          update.mandatoryUpdate
+              ? 'DDM ${update.lastVersion} is required.'
+              : 'DDM ${update.lastVersion} is available.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: foregroundColor,
+              ),
+        ),
+        actions: [
+          FilledButton.icon(
+            onPressed: () {
+              messenger.hideCurrentMaterialBanner();
+              unawaited(controller.openUpdateSite());
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: foregroundColor,
+              foregroundColor: backgroundColor,
+              visualDensity: VisualDensity.compact,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            icon: const Icon(Icons.upgrade, size: 18),
+            label: const Text('Update'),
+          ),
+          TextButton(
+            onPressed: messenger.hideCurrentMaterialBanner,
+            style: TextButton.styleFrom(
+              foregroundColor: foregroundColor,
+              visualDensity: VisualDensity.compact,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Dismiss'),
+          ),
+        ],
+      ),
     );
   }
 }

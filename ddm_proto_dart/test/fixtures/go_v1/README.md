@@ -7,7 +7,7 @@ These fixtures are generated from the current Go implementation and are the comp
 From the repository `go/` directory:
 
 ```bash
-/Users/user/sdk/go1.25.1/bin/go run ./cmd/gen-golden-fixtures
+go run ./cmd/gen-golden-fixtures
 ```
 
 ## Scope

@@ -2,8 +2,14 @@ import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:flutter/material.dart';
 
 extension AccountPolicyView on AccountRecord {
-  bool get isSilent => !Address.fromText(address).requiresAck;
+  bool get isSilent => isSilentAddress(address);
 }
+
+extension ContactPolicyView on ContactRecord {
+  bool get isSilent => isSilentAddress(address);
+}
+
+bool isSilentAddress(String address) => !Address.fromText(address).requiresAck;
 
 final class AccountTitle extends StatelessWidget {
   const AccountTitle({
