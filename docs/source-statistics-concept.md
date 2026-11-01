@@ -25,7 +25,7 @@ four operations:
 ```go
 type Source interface {
     GetConfigs(ctx context.Context) ([]ConfigRecord, error)
-    GetSyncBlobs(ctx context.Context, ids []SyncBlobID) ([]SyncBlobLookupResult, error)
+    GetSyncBlobs(ctx context.Context, ids []SyncBlobID) ([]*SyncBlob, error)
     GetMessageIndexRoot(ctx context.Context) (*MessageIndexNode, error)
     GetMessageIndexNode(ctx context.Context, id MessageIndexNodeID) (*MessageIndexNode, error)
 }
@@ -59,10 +59,10 @@ succeeds.
 : An encrypted transferable synchronization object with two fields:
   `ID SyncBlobID` and `Payload []byte`.
 
-`SyncBlobLookupResult`
-: A result item that preserves request-to-result alignment for
-  `LoadSyncBlobs`. It contains the requested `ID` and either a populated
-  `Blob` or `Blob == nil` for an explicit miss.
+`GetSyncBlobs` result
+: A slice aligned with the requested IDs. Each entry is either a populated
+  `*SyncBlob` or `nil` for an explicit miss. A returned blob carries its own
+  `ID`; callers validate that it matches the requested ID at the same index.
 
 `NibblePath`
 : A canonical lowercase hexadecimal nibble string in `[0-9a-f]`. It is used

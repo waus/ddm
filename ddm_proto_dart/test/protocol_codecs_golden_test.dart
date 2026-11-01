@@ -76,6 +76,28 @@ void main() {
     expect(envelope.object, encryptedBytes);
   });
 
+  test('encrypted message requires uint32 expires_time', () {
+    expect(
+      () => EncryptedMessage(
+        version: encryptedMessageVersionV1,
+        ttl: 1,
+        expiresTime: -1,
+        streamNumber: StreamId(1),
+        payload: Uint8List(0),
+      ),
+      throwsFormatException,
+    );
+
+    final oversized = ddmCborCodec.encode(<Object?>[
+      encryptedMessageVersionV1,
+      1,
+      0x100000000,
+      1,
+      Uint8List(0),
+    ]);
+    expect(() => EncryptedMessage.fromBytes(oversized), throwsFormatException);
+  });
+
   test('sync blob fixture parity and id derivation', () {
     final fixture = _readJson(fixturesRoot, 'sync_blob.json');
     final payloadHex = fixture['payload_hex'] as String;

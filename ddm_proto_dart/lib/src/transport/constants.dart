@@ -55,7 +55,7 @@ const List<String> defaultPeerExchangeAddrs = <String>[
 //   '/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb',
 //   '/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt',
 const List<String> defaultP2pBootstrapAddrs = <String>[
- '/ip4/54.38.47.166/tcp/4001/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb',
+  '/ip4/54.38.47.166/tcp/4001/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb',
   '/ip4/147.135.44.132/tcp/4001/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN',
   '/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ',
   '/ip4/104.211.114.82/tcp/4001/p2p/QmSoLnSGccFuZQJzRadHn95W2CrSFmZuTdDWP8HXaHca9z',
@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS branches (
   children_hashes BLOB NOT NULL
 );
 ''';
+
+const String querySetFileJournalModeMemory = 'PRAGMA journal_mode=MEMORY;';
+const String querySetFileTempStoreMemory = 'PRAGMA temp_store=MEMORY;';
 
 const int childrenHashesEncodedByteLength =
     messageIndexChildSlotCount * messageIndexNodeIdSize;

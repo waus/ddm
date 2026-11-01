@@ -15,11 +15,11 @@ Recommended sender behavior:
 3. if no valid ACK arrives again, retry once with a TTL of 8 days;
 4. stop after 3 total publications;
 5. stop immediately after observing a valid ACK for the `MessageID`.
-6. for each publication, use two independent random additions for the selected
-   baseline `X`:
-7. write `ttl = X + rand(0..X/10)` into the encrypted message and use this
+6. for each publication, choose `jitter = rand(0..X/10)` for the selected
+   baseline `X`;
+7. write `ttl = X + jitter` into the encrypted message and use this
    exact value for PoW difficulty calculation;
-8. write `expires_time = now + X + rand(0..X/20)`.
+8. write `expires_time = now + X + rand(0..jitter)`.
 
 Clients MAY increase proof-of-work cost on later retries, but the default
 profile does not require escalation.

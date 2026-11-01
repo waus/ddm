@@ -47,7 +47,7 @@ Future<({SyncBlobId id, EncryptedMessage encrypted})> parseAndValidateBlob({
   if (encrypted.expiresTime < currentUnixSeconds) {
     throw const FormatException('encrypted messages is expired');
   }
-  final maxExpiresAt = currentUnixSeconds + encrypted.ttl + 2;
+  final maxExpiresAt = currentUnixSeconds + encrypted.ttl;
   if (encrypted.expiresTime > maxExpiresAt) {
     throw const FormatException('expires_time exceeds ttl-bound lifetime');
   }
@@ -154,13 +154,8 @@ int calculateDifficulty({
   final rawA = _mulClamp(base, effectiveTtl, maxDifficulty);
   final raw = _mulClamp(rawA, effectiveLength, maxDifficulty);
 
-  if (raw == 0) {
-    return 0;
-  }
-  if (scaleDivisor <= 1) {
-    return raw;
-  }
-  final scaled = raw ~/ scaleDivisor;
+  final effectiveScaleDivisor = scaleDivisor <= 1 ? 1 : scaleDivisor;
+  final scaled = raw ~/ effectiveScaleDivisor;
   return scaled == 0 ? 1 : scaled;
 }
 

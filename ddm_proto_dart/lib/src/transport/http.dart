@@ -277,9 +277,6 @@ final class HttpSyncSourceServer implements SyncTransportServer {
   String get protocolName => httpTransportProtocolName;
 
   @override
-  ServerFlags get flags => const ServerFlags(serverFlagNone);
-
-  @override
   Future<void> start(SyncSource source) async {
     if (_listenAddress.isEmpty) {
       throw const FormatException('http listen address must not be empty');
@@ -306,17 +303,6 @@ final class HttpSyncSourceServer implements SyncTransportServer {
       await server.close(force: true);
     }
   }
-
-  @override
-  bool peerMatch(String id) => isHttpPeerId(id);
-
-  @override
-  Future<SyncSource> createPeerSource(String id) async {
-    return HttpSyncSourceClient(id);
-  }
-
-  @override
-  Future<List<String>> discoverPeers() async => const <String>[];
 
   Future<void> _serve(HttpServer server) async {
     await for (final request in server) {
@@ -653,12 +639,19 @@ Map<String, Object?> messageIndexNodeToHttp(MessageIndexNode node) {
   return out;
 }
 
-SyncTransportServer newHttpProtocolServer() {
-  return ProtocolSyncTransportServer(
-    protocolName: httpTransportProtocolName,
-    peerMatch: isHttpPeerId,
-    createPeerSource: (id) => HttpSyncSourceClient(id),
-  );
+final class HttpSyncTransport implements SyncTransport {
+  const HttpSyncTransport();
+
+  @override
+  String get protocolName => httpTransportProtocolName;
+
+  @override
+  bool peerMatch(String id) => isHttpPeerId(id);
+
+  @override
+  Future<SyncSource> createPeerSource(String id) async {
+    return HttpSyncSourceClient(id);
+  }
 }
 
 HttpClient _defaultHttpClient() {

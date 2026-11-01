@@ -97,6 +97,20 @@ void main() {
     );
   });
 
+  test('calculateDifficulty keeps minimum one for zero raw score', () {
+    for (final divisor in <int>[0, 1, 1000]) {
+      expect(
+        calculateDifficulty(
+          base: 0,
+          scaleDivisor: divisor,
+          ttlSeconds: 3600,
+          payloadBytes: 1024,
+        ),
+        1,
+      );
+    }
+  });
+
   test('VdfPowService verifies Go-produced fixed-width proof vector', () async {
     const service = VdfPowService();
     final verified = await service.verify(

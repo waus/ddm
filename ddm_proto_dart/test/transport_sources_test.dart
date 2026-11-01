@@ -27,7 +27,7 @@ void main() {
   });
 
   test('HTTP client talks to live Dart sync source server', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final fixture = _buildPowBlob(
       streamId: const StreamId(0x01020304),
       ttl: 3600,
@@ -141,7 +141,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('ddm-file-source-');
     addTearDown(() => dir.deleteSync(recursive: true));
     final dbPath = '${dir.path}/sync-source.sqlite';
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final db = sqlite3.open(dbPath);
     try {
       _createFileSourceSchema(db);
@@ -224,7 +224,7 @@ void main() {
   });
 
   test('file source push stores blobs and rewrites branch tree', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final dbPath = _createEmptyFileSourcePathWithCleanup();
     final source = FileSyncSourceClient(_fileUri(dbPath), nowUtc: () => now);
     addTearDown(source.stop);
@@ -265,7 +265,7 @@ void main() {
   });
 
   test('file source push splits diverging prefixes', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final dbPath = _createEmptyFileSourcePathWithCleanup();
     final source = FileSyncSourceClient(_fileUri(dbPath), nowUtc: () => now);
     addTearDown(source.stop);
@@ -319,14 +319,14 @@ void main() {
         () => FileSyncSourceClient(_fileUri(textPath)), throwsFormatException);
   });
 
-  test('file server exposes discovery only on supported desktop platforms',
+  test('file transport discovers external storage on supported platforms',
       () async {
-    final server = newFileProtocolServer();
-    expect(
-      server.flags.has(serverFlagDiscovery),
-      supportsExternalStorageDiscovery,
-    );
-    expect(await server.discoverPeers(), isA<List<String>>());
+    final transport = FileSyncTransport();
+    final peers = await transport.discoverPeers();
+    expect(peers, isA<List<String>>());
+    if (!supportsExternalStorageDiscovery) {
+      expect(peers, isEmpty);
+    }
   });
 }
 

@@ -5,13 +5,9 @@ import 'dart:typed_data';
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:test/test.dart';
 
-const String _adminPrivateKeyHex =
-    '0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f'
-    'd9bf2148748a85c89da5aad8ee0b0fc2d105fd39d41a4c796536354f0ae2900c';
-
 void main() {
   test('BlobIndex adds blobs into compressed nibble tree', () {
-    var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    var now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final index = BlobIndex(nowUtc: () => now);
     final idA = SyncBlobId.parseHex(
       'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01',
@@ -45,7 +41,7 @@ void main() {
   });
 
   test('BlobIndex garbage collection removes expired obsolete blobs', () {
-    var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    var now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -78,7 +74,7 @@ void main() {
 
   test('BlobIndex periodic garbage collection removes expired obsolete blobs',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -107,7 +103,7 @@ void main() {
 
   test('LocalSyncSource preloads fresh storage rows and serves lookups',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -150,7 +146,7 @@ void main() {
   });
 
   test('recursiveSync imports validated leaves into local source', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -203,8 +199,90 @@ void main() {
     expect(duplicateReceived, 0);
   });
 
-  test('recursiveSync rolls back imported blob when callback fails', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+  test('LocalSyncSource runs import callback before duplicate blob insert',
+      () async {
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+
+    final fixture = _buildPowBlob(
+      streamId: const StreamId(0x01020304),
+      ttl: 3600,
+      expiresTime: _unix(now.add(const Duration(hours: 1))),
+    );
+    final configs = _configs(storage, now);
+    var imported = 0;
+    final local = LocalSyncSource(
+      storage: storage,
+      configs: configs,
+      nowUtc: () => now,
+      onImportedBlob: (encrypted, {validationContext}) {
+        imported++;
+      },
+    );
+
+    storage.syncBlobs.insertSyncBlob(
+      SyncBlobRecord(
+        blobId: fixture.id,
+        blob: fixture.blob.payload,
+        source: syncBlobSourceImported,
+        expiresAt: fixture.encrypted.expiresTime,
+      ),
+    );
+
+    await local.push(fixture.blob);
+
+    expect(imported, 1);
+    expect(storage.syncBlobs.getSyncBlobById(fixture.id), isNotNull);
+  });
+
+  test('parseAndValidateBlob allows expires_time at ttl lifetime', () async {
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
+    final fixture = _buildPowBlob(
+      streamId: const StreamId(0x05060708),
+      ttl: 3600,
+      expiresTime: _unix(now.add(const Duration(hours: 1))),
+    );
+
+    await parseAndValidateBlob(
+      blobPayload: fixture.blob.payload,
+      currentConfig: _testConfigCore(),
+      currentUnixSeconds: _unix(now),
+      verifyPow: _acceptPow,
+    );
+  });
+
+  test('parseAndValidateBlob rejects expires_time beyond ttl lifetime',
+      () async {
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
+    final fixture = _buildPowBlob(
+      streamId: const StreamId(0x05060708),
+      ttl: 3600,
+      expiresTime: _unix(now.add(const Duration(hours: 1, seconds: 1))),
+    );
+
+    await expectLater(
+      parseAndValidateBlob(
+        blobPayload: fixture.blob.payload,
+        currentConfig: _testConfigCore(),
+        currentUnixSeconds: _unix(now),
+        verifyPow: ({
+          required modulus,
+          required input,
+          required difficulty,
+          required y,
+          required pi,
+        }) {
+          fail('verifyPow must not be called');
+        },
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('recursiveSync does not store imported blob when callback fails',
+      () async {
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -248,7 +326,7 @@ void main() {
 
   test('SyncService importFrom pushes local root back to writable source',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -297,7 +375,7 @@ void main() {
   });
 
   test('SyncService reverse sync limits pushes per writable source', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -354,7 +432,7 @@ void main() {
 
   test('SyncService pushes local root to writable source with null root',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -394,7 +472,7 @@ void main() {
   });
 
   test('SyncService imports source configs before tree sync', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -404,14 +482,10 @@ void main() {
       configs: configs,
       nowUtc: () => now,
     );
-    final remoteConfig = await _buildConfigRecord(
-      seqNo: 1904,
-      activeFromUnix: _unix(now.add(const Duration(days: 1))),
-    );
     final remote = _MemorySyncSource(
       index: BlobIndex(nowUtc: () => now),
       rootIsNull: true,
-      configs: <ConfigRecord>[remoteConfig],
+      configs: <ConfigRecord>[ConfigRepository.defaultConfigRecord],
     );
 
     final received = await service.importFrom(
@@ -421,13 +495,13 @@ void main() {
 
     expect(received, 0);
     expect(remote.rootLookups, 1);
-    expect(_configSeqNos(configs.records()), contains(1904));
+    expect(_configSeqNos(configs.records()), contains(1));
     expect(storage.configs.listConfigRecords().map(configRecordVersion),
         everyElement(configRecordVersionV1));
   });
 
   test('checkSource accepts empty root', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -440,7 +514,7 @@ void main() {
   });
 
   test('checkSource rejects inflated branch children count', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
@@ -486,7 +560,7 @@ void main() {
   });
 
   test('source selection includes bad and old exploration quotas', () {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final sources = <RegisteredSource>[
       for (var i = 0; i < 12; i++)
         _registered('healthy-recent-$i', ratingDefault, now),
@@ -529,6 +603,16 @@ ConfigManager _configs(DdmSqliteStorage storage, DateTime now) {
   return ConfigManager(storage: storage.configs, nowUtc: () => now);
 }
 
+ConfigV1Core _testConfigCore() {
+  return ConfigV1Core(
+    seqNo: 1,
+    activeFromUnix: 0,
+    powBaseTarget: 1000,
+    powScaleDivisor: 7373,
+    powModulus: _testPowModulus(),
+  );
+}
+
 FutureOr<bool> _acceptPow({
   required Uint8List modulus,
   required Uint8List input,
@@ -567,26 +651,6 @@ FutureOr<bool> _acceptPow({
   );
 }
 
-Future<ConfigRecord> _buildConfigRecord({
-  required int seqNo,
-  required int activeFromUnix,
-}) async {
-  final payload = await ConfigV1Payload.build(
-    core: ConfigV1Core(
-      seqNo: seqNo,
-      activeFromUnix: activeFromUnix,
-      powBaseTarget: 1000,
-      powScaleDivisor: 7373,
-      powModulus: _testPowModulus(),
-    ),
-    privateKey: _decodeHex(_adminPrivateKeyHex),
-  );
-  return parseConfigRecord(
-    Uint8List.fromList(
-        <int>[0x82, configRecordVersionV1, ...payload.toBytes()]),
-  );
-}
-
 List<int> _configSeqNos(List<ConfigRecord> records) {
   return records
       .map(configRecordPayload)
@@ -599,15 +663,6 @@ Uint8List _testPowModulus() {
   return Uint8List(powModulusSize)
     ..[0] = 0x80
     ..[powModulusSize - 1] = 1;
-}
-
-Uint8List _decodeHex(String value) {
-  final normalized = value.trim().toLowerCase();
-  final out = Uint8List(normalized.length ~/ 2);
-  for (var i = 0; i < normalized.length; i += 2) {
-    out[i ~/ 2] = int.parse(normalized.substring(i, i + 2), radix: 16);
-  }
-  return out;
 }
 
 RegisteredSource _registered(String id, double rating, DateTime lastOnlineAt) {

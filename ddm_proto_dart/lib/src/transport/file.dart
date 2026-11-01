@@ -21,6 +21,7 @@ final class FileSyncSourceClient implements SyncSource {
     id = normalized.id;
     _db = sqlite3.open(normalized.path);
     try {
+      _configureConnection();
       _initSchema();
       _collectExpired();
       _rootId = _findLiveRootId();
@@ -167,6 +168,11 @@ ON CONFLICT(blob_id) DO NOTHING;
   void _initSchema() {
     _db.execute(queryCreateFileBlobsTable);
     _db.execute(queryCreateFileBranchesTable);
+  }
+
+  void _configureConnection() {
+    _db.execute(querySetFileJournalModeMemory);
+    _db.execute(querySetFileTempStoreMemory);
   }
 
   void _collectExpired() {
@@ -441,16 +447,26 @@ NormalizedFileSyncSource normalizeFileSyncSourceUpstream(String raw) {
   );
 }
 
-SyncTransportServer newFileProtocolServer({UtcNow? nowUtc}) {
-  return ProtocolSyncTransportServer(
-    protocolName: fileTransportProtocolName,
-    flags: ServerFlags(
-      supportsExternalStorageDiscovery ? serverFlagDiscovery : serverFlagNone,
-    ),
-    peerMatch: isFilePeerId,
-    createPeerSource: (id) => FileSyncSourceClient(id, nowUtc: nowUtc),
-    discoverPeers: findExternalStorageFiles,
-  );
+final class FileSyncTransport implements SyncTransport, SyncPeerDiscovery {
+  FileSyncTransport({UtcNow? nowUtc}) : _nowUtc = nowUtc ?? defaultUtcNow;
+
+  final UtcNow _nowUtc;
+
+  @override
+  String get protocolName => fileTransportProtocolName;
+
+  @override
+  bool peerMatch(String id) => isFilePeerId(id);
+
+  @override
+  Future<SyncSource> createPeerSource(String id) async {
+    return FileSyncSourceClient(id, nowUtc: _nowUtc);
+  }
+
+  @override
+  Future<List<String>> discoverPeers() async {
+    return findExternalStorageFiles();
+  }
 }
 
 void _validateSQLiteFileHeaderOrEmpty(String path) {

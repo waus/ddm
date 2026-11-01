@@ -153,6 +153,7 @@ Global configuration is a versioned signed record:
 ```cddl
 u64 = 0..18446744073709551615
 i64 = -9223372036854775808..9223372036854775807
+uint8 = 0..255
 
 cose-headers = { * int => any }
 
@@ -163,7 +164,7 @@ cose-sign1 = #6.18([
   signature: bstr
 ])
 
-config-record = config-record-v1
+config-record = config-record-v1 / config-record-v2
 
 config-record-v1 = [
   version: 1,
@@ -177,11 +178,29 @@ config-record-v1-payload = [
   pow-scale-divisor: u64,
   pow-modulus: bstr .size 128
 ]
+
+; Draft. Not implemented by current clients.
+config-record-v2 = [
+  version: 2,
+  signed-payload: cose-sign1
+]
+
+config-record-v2-payload = [
+  seqno: u64,
+  active-from-unix: i64,
+  pow-base-target: u64,
+  pow-scale-divisor: u64,
+  pow-modulus: bstr .size 128,
+  max-blob-ttl: u32,
+  min-recommended-split: uint8,
+  max-recommended-split: uint8
+]
 ```
 
 Each record is self-describing by `version`. The `COSE_Sign1.payload` of
 `config-record-v1.signed-payload` MUST be the deterministic `CBOR` encoding of
-`config-record-v1-payload`.
+`config-record-v1-payload`. Draft `config-record-v2` follows the same signing
+rule for `config-record-v2-payload`.
 
 ### 4.1 Record Version 1
 
@@ -201,7 +220,23 @@ The `COSE_Sign1` profile for the current protocol is:
    fields;
 4. the verification key is a developer-controlled hardcoded admin public key.
 
-### 4.2 Activation Rules
+### 4.2 Record Version 2 Draft
+
+Record version `2` is a draft and is not implemented by current clients.
+
+Record version `2` payload contains all record version `1` fields, plus:
+
+6. `max_blob_ttl: u32` (maximum accepted sync blob TTL in whole seconds).
+7. `min_recommended_split: uint8` (minimum recommended split depth).
+8. `max_recommended_split: uint8` (maximum recommended split depth).
+
+Clients that implement this draft MUST reject imported sync blobs whose
+`encrypted-message-v1.ttl` exceeds `max_blob_ttl` from the active config.
+Clients SHOULD choose split depths within the inclusive
+`min_recommended_split..max_recommended_split` range when creating new sync
+blobs.
+
+### 4.3 Activation Rules
 
 Config records represent full snapshots, not patches. A source may return more
 than one record. At evaluation time `t`, the active record is selected as:
@@ -211,7 +246,7 @@ than one record. At evaluation time `t`, the active record is selected as:
 
 If no record is active yet, clients use a built-in signed default record.
 
-### 4.3 Decentralized Distribution
+### 4.4 Decentralized Distribution
 
 Global config is distributed in the same decentralized store-and-forward model
 as ordinary messages. There is no central mandatory config endpoint.
@@ -221,7 +256,7 @@ same transports (online relays, peer sync, offline file transfer, removable
 media, and equivalent channels). This lets clients receive future config
 updates even in delay-tolerant or intermittently connected environments.
 
-### 4.4 Unknown Version Handling
+### 4.5 Unknown Version Handling
 
 If a client encounters an unknown config record version, it MUST NOT apply that
 record and MUST present a persistent upgrade prompt to the user.
@@ -456,6 +491,18 @@ config-record-v1-payload = [
   pow-modulus: bstr .size 128
 ]
 
+; Draft. Not implemented by current clients.
+config-record-v2-payload = [
+  seqno: u64,
+  active-from-unix: i64,
+  pow-base-target: u64,
+  pow-scale-divisor: u64,
+  pow-modulus: bstr .size 128,
+  max-blob-ttl: u32,
+  min-recommended-split: uint8,
+  max-recommended-split: uint8
+]
+
 pow-envelope-v1 = [
   version: 1,
   algorithm: pow-algorithm,
@@ -467,13 +514,13 @@ pow-envelope-v1 = [
 encrypted-message-v1 = [
   version: 1,
   ttl: u32,
-  expires-time: u64,
+  expires-time: u32,
   stream-number: u32,
   payload: bstr
 ]
 
 unencrypted-message-v1 = [
-  magic: u32,
+  magic: 0x77617573,
   version: 1,
   signed-body: cose-sign1
 ]
@@ -485,10 +532,6 @@ message-body-v1 = [
   message: bstr,
   ack-data: bstr
 ]
-
-ack-message-data = [
-  acked-message-id: uuid-bytes
-]
 ```
 
 ### 7.1 Encrypted Message Object
@@ -497,7 +540,7 @@ Field interpretation for `encrypted-message-v1`:
 
 1. `version` identifies the object format version;
 2. `ttl` is the sender-selected TTL in whole seconds used for PoW difficulty;
-3. `expires_time` is the absolute end-of-life of the object;
+3. `expires_time` is the absolute end-of-life of the object as unsigned Unix seconds;
 4. `stream_number` is the stream in which the object propagates;
 5. `payload` is a binary `age` message for one recipient, addressed to the
    recipient-side `X25519` material derived from the destination address.
@@ -506,7 +549,7 @@ Field interpretation for `encrypted-message-v1`:
 
 Field interpretation for `unencrypted-message-v1` and `message-body-v1`:
 
-1. `magic` identifies the internal payload format;
+1. `magic` MUST equal `0x77617573` and identifies the internal payload format;
 2. `version` identifies the decrypted payload envelope format revision;
 3. `signed_body` is a `COSE_Sign1` object whose payload MUST be the
    deterministic `CBOR` encoding of `message-body-v1`;
@@ -515,7 +558,7 @@ Field interpretation for `unencrypted-message-v1` and `message-body-v1`:
 5. `sender` carries the full sender address object encoded as `address-v1`;
 6. `message_type` identifies the logical payload type and content encoding;
 7. `message` carries the payload bytes; for `message_type = 3` (`Ack`) it MUST
-   contain the deterministic `CBOR` encoding of `ack-message-data`;
+   contain the acknowledged message ID as `uuid-bytes`;
 8. `ack_data` carries a precomputed acknowledgment message encoded as a full
    serialized `encrypted-message-v1`; if `message_type = 3` (`Ack`),
    `ack_data` MUST be empty.
@@ -544,9 +587,8 @@ objects. Textual UUID rendering is for debugging and user interfaces only.
 
 ### 7.3 ACK Message Payload
 
-Field interpretation for `ack-message-data`:
-
-1. `acked_message_id` identifies the delivered message.
+For ACK messages, `message-body-v1.message` is the `uuid-bytes` value of the
+delivered message ID.
 
 The sender precomputes a complete encrypted ACK message addressed back to the
 sender and embeds the serialized `encrypted-message-v1` bytes in `ack_data`.
@@ -554,8 +596,9 @@ The recipient MAY republish that byte sequence as-is after successful
 decryption.
 
 The embedded ACK message uses the ordinary `encrypted-message-v1` container.
-Its decrypted payload MUST set `message_type = 3` (`Ack`), MUST carry a
-serialized `ack-message-data` in `message`, and MUST leave `ack_data` empty.
+Its decrypted payload MUST set `message_type = 3` (`Ack`), MUST carry the
+acknowledged message ID as `uuid-bytes` in `message`, and MUST leave `ack_data`
+empty.
 
 This makes ACK traffic externally indistinguishable from ordinary encrypted
 messages at the shared-object level.
@@ -575,7 +618,7 @@ Interpretation:
 1. `0`: `Plain`, UTF-8 plain-text message without additional structure;
 2. `1`: `Markdown`, UTF-8 structured markdown;
 3. `2`: `Binary`, extended encoding for richer message formats;
-4. `3`: `Ack`, deterministic `CBOR` encoding of `ack-message-data`.
+4. `3`: `Ack`, `uuid-bytes` of the acknowledged message ID.
 
 The first structured UTF-8 format is markdown-based and uses a single required
 subject header at the start of the document:

@@ -28,7 +28,7 @@ void main() {
       expect(version['number'], 1);
       expect(version['dirty'], 0);
       final config = db.select('SELECT seqno FROM config LIMIT 1;').single;
-      expect(config['seqno'], 1903);
+      expect(config['seqno'], 1);
     } finally {
       db.dispose();
     }

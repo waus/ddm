@@ -66,8 +66,12 @@ usable DDM Flutter application on top of the Dart core.
 
 - [x] Define the client sync coordinator on top of `ddm_proto_dart`.
 - [x] Support online synchronization when network transport is available.
-- [ ] Support offline import/export flows for sync packages or files.
+- [x] Support offline import/export flows for sync packages or files.
 - [ ] Add source registration controls and background sync policy hooks.
+- [ ] Add stream-based transport API for background sync.
+- [ ] Finalize sharding.
+- [ ] Add support for custom transport plugins via wasm.
+- [ ] Add local peer discovery via mDNS for libp2p.
 
 ## 10. Global Configuration
 
@@ -75,6 +79,7 @@ usable DDM Flutter application on top of the Dart core.
 - [ ] Show the currently active config version and activation time.
 - [ ] Handle unknown config record versions with a persistent upgrade prompt.
 - [x] Apply config-driven PoW and protocol parameters consistently.
+- [ ] Migrate to v2 config format with moving part of current hard-coded constants into config.
 
 ## 11. Privacy and Security UX
 
@@ -87,7 +92,21 @@ usable DDM Flutter application on top of the Dart core.
 - [ ] Add developer/debug screens for config, streams, queue state, and local
       database inspection.
 
-## 13. Testing and Release Readiness
+## 13. Extended messaging types
+
+- [ ] Add rich text and media support.
+- [ ] Add imageboards.
+- [ ] Add public channels.
+
+## 14. Localization
+
+- [ ] Add support for multiple languages and locales.
+- [ ] Localize error messages and UI strings.
+- [ ] Implement language selection and auto-detection.
+- [ ] Add support for RTL languages.
+- [ ] Add 6 basic languages: English, Spanish, French, Russian, Arabic, Chinese.
+
+## 15. Testing and Release Readiness
 
 - [ ] Add unit tests for client-side state and delivery policy logic.
 - [ ] Add widget tests for onboarding and message flow.

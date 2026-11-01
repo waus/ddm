@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private var appMenuChannel: FlutterMethodChannel?
+  private var securityScopedSyncAccessUrls: [URL] = []
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -100,7 +101,17 @@ class MainFlutterWindow: NSWindow {
         result(nil)
         return
       }
+      self.startSecurityScopedSyncAccess(for: url)
       result(url.absoluteString)
+    }
+  }
+
+  private func startSecurityScopedSyncAccess(for url: URL) {
+    if securityScopedSyncAccessUrls.contains(url) {
+      return
+    }
+    if url.startAccessingSecurityScopedResource() {
+      securityScopedSyncAccessUrls.append(url)
     }
   }
 }

@@ -135,7 +135,7 @@ void main() {
 
     await server.start(source);
     expect(server.protocolName, p2pTransportProtocolName);
-    expect(server.flags.has(serverFlagDiscovery), isTrue);
+    expect(server, isA<SyncPeerDiscovery>());
     expect(server.loadedPrivateKey, privateKey);
     expect(backend.started, isTrue);
     expect(backend.listenAddrs, ['/ip4/127.0.0.1/tcp/23708']);

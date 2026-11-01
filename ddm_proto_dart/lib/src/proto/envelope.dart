@@ -10,10 +10,11 @@ final class EncryptedMessage {
   EncryptedMessage({
     required this.version,
     required this.ttl,
-    required this.expiresTime,
+    required int expiresTime,
     required this.streamNumber,
     required Uint8List payload,
-  }) : payload = copyBytes(payload);
+  })  : expiresTime = _requireUint32(expiresTime, 'expires_time'),
+        payload = copyBytes(payload);
 
   final int version;
   final int ttl;
@@ -64,6 +65,13 @@ final class EncryptedMessage {
       payload: payload,
     );
   }
+}
+
+int _requireUint32(int value, String label) {
+  if (value < 0 || value > 0xffffffff) {
+    throw FormatException('$label must fit uint32, got $value');
+  }
+  return value;
 }
 
 final class PowEnvelope {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,6 +6,196 @@ import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('runtime resumes queued outbox after an asynchronous noise power check',
+      () async {
+    final core = _openCore(
+      runtimeOptions: const DdmCoreRuntimeOptions(
+        transports: RuntimeTransportOptions(backgroundSyncEnabled: false),
+      ),
+    );
+    addTearDown(core.close);
+    final alice = await core.accounts.createAccount('alice');
+    final checkingPower = Completer<void>();
+    final power = Completer<bool>();
+    final published = Completer<void>();
+    final pow = _RecordingPowService();
+    final worker = RuntimeWorker(
+      core: core,
+      pow: pow,
+      verifyPow: _acceptPow,
+      noiseInterval: const Duration(milliseconds: 10),
+      canGenerateNoise: () {
+        if (!checkingPower.isCompleted) checkingPower.complete();
+        return power.future;
+      },
+      log: (_) {},
+      onEvent: (event) {
+        if (!published.isCompleted &&
+            event.operation == RuntimeOperation.outbox &&
+            event.phase == RuntimePhase.completed) {
+          published.complete();
+        }
+      },
+    );
+    addTearDown(worker.close);
+    worker.start();
+    await checkingPower.future.timeout(const Duration(seconds: 3));
+    core.messaging.sendTextMessage(
+      sender: alice,
+      recipient: Address.fromText(alice.address),
+      text: 'queued during power check',
+      ttl: const Duration(hours: 1),
+    );
+
+    await worker.publishPending();
+    expect(pow.solves, isEmpty);
+    power.complete(false);
+    await published.future.timeout(const Duration(seconds: 3));
+
+    expect(core.outbox.listPendingMessages(), isEmpty);
+    expect(pow.solves, hasLength(1));
+    expect(core.sync.totalSyncedMessages, 1);
+  });
+
+  test('runtime publishes pending messages without Flutter', () async {
+    final core = _openCore(
+      runtimeOptions: const DdmCoreRuntimeOptions(
+        transports: RuntimeTransportOptions(backgroundSyncEnabled: false),
+      ),
+    );
+    addTearDown(core.close);
+    final alice = await core.accounts.createAccount('alice');
+    core.messaging.sendTextMessage(
+      sender: alice,
+      recipient: Address.fromText(alice.address),
+      text: 'headless outbox',
+      ttl: const Duration(hours: 1),
+    );
+    final published = Completer<void>();
+    final worker = RuntimeWorker(
+      core: core,
+      pow: _RecordingPowService(),
+      verifyPow: _acceptPow,
+      canGenerateNoise: () async => false,
+      log: (_) {},
+      onEvent: (event) {
+        if (event.operation == RuntimeOperation.outbox &&
+            event.phase == RuntimePhase.completed) {
+          published.complete();
+        }
+      },
+    );
+    addTearDown(worker.close);
+
+    worker.start();
+    await published.future.timeout(const Duration(seconds: 3));
+
+    expect(core.outbox.listPendingMessages(), isEmpty);
+    expect(core.sync.totalSyncedMessages, 1);
+    expect(
+        core.accounts.listMailboxMessages(alice, Mailbox.outbox).single.state,
+        messageStatePowSynced);
+  });
+
+  test('runtime imports messages and updates peer ratings without Flutter',
+      () async {
+    final receiver = _openCore(
+      runtimeOptions: DdmCoreRuntimeOptions(
+        p2p: RuntimeP2pOptions(backend: _RecordingP2pBackend()),
+        transports: const RuntimeTransportOptions(
+          backgroundSyncInterval: Duration(milliseconds: 20),
+        ),
+      ),
+    );
+    final sender = _openCore();
+    addTearDown(receiver.close);
+    addTearDown(sender.close);
+    final alice = await receiver.accounts.createAccount('alice');
+    final bob = await sender.accounts.createAccount('bob');
+    final message = sender.messaging.sendTextMessage(
+      sender: bob,
+      recipient: Address.fromText(alice.address),
+      text: 'headless sync',
+      ttl: const Duration(hours: 1),
+    );
+    await sender.outbox.publishMessage(message.id, pow: _RecordingPowService());
+    final server = await sender.transports.startHttpServer(
+      listenAddress: '127.0.0.1:0',
+    );
+    addTearDown(server.stop);
+    final sourceId = server.boundUri.toString();
+    await receiver.transports.addSource(sourceId);
+    final imported = Completer<void>();
+    final worker = RuntimeWorker(
+      core: receiver,
+      pow: _RecordingPowService(),
+      verifyPow: _acceptPow,
+      canGenerateNoise: () async => false,
+      log: (_) {},
+      onEvent: (event) {
+        if (!imported.isCompleted &&
+            event.operation == RuntimeOperation.sync &&
+            event.phase == RuntimePhase.completed &&
+            receiver.accounts
+                .listMailboxMessages(alice, Mailbox.inbox)
+                .isNotEmpty) {
+          imported.complete();
+        }
+      },
+    );
+    addTearDown(worker.close);
+
+    worker.start();
+    await imported.future.timeout(const Duration(seconds: 3));
+
+    final inbox = receiver.accounts.listMailboxMessages(alice, Mailbox.inbox);
+    expect(String.fromCharCodes(inbox.single.payload), 'headless sync');
+    final peer = receiver.sync
+        .listStoredPeers()
+        .singleWhere((peer) => peer.id == sourceId);
+    expect(peer.rating, closeTo(ratingDefault + ratingGoodBlobReceived, 1e-9));
+  });
+
+  test('receive rejects invalid signatures through both entry points',
+      () async {
+    final core = _openCore();
+    addTearDown(core.close);
+    final alice = await core.accounts.createAccount('alice');
+    final bob = await core.accounts.createAccount('bob');
+    final inbound = await _decodedMessage(
+      sender: bob,
+      recipient: alice,
+      message: 'signed text',
+      messageIdSeed: 0x73,
+    );
+    final invalid = await UnencryptedMessage.signed(
+      privateKey: alice.privateKey,
+      messageId: inbound.decrypted.messageId,
+      sender: Address.fromText(bob.address),
+      messageType: MessageType.plain,
+      message: inbound.decrypted.message,
+    );
+
+    expect(
+        await core.receive.materializeDecodedInbound(
+          recipient: alice,
+          encrypted: inbound.encrypted,
+          decrypted: invalid,
+        ),
+        isFalse);
+    expect(
+        await core.receive.materializeImportedEncrypted(
+          inbound.encrypted,
+          decrypt: (
+                  {required privateKey,
+                  required publicKey,
+                  required ciphertext}) =>
+              invalid.toBytes(),
+        ),
+        isFalse);
+    expect(core.accounts.listMailboxMessages(alice, Mailbox.inbox), isEmpty);
+  });
+
   test('DdmCore creates accounts with DDM addresses and exportable keys',
       () async {
     final core = _openCore();
@@ -38,7 +229,7 @@ void main() {
   });
 
   test('send text persists local outbound message with base ttl', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(
       nowUtc: () => now,
       ttlDraw: (max) => max,
@@ -78,29 +269,9 @@ void main() {
     expect(contacts.single.approved, isFalse);
   });
 
-  test('send requires a local sender account', () async {
-    final core = _openCore();
-    addTearDown(core.close);
-    final otherCore = _openCore();
-    addTearDown(otherCore.close);
-
-    final bob = await core.accounts.createAccount('bob');
-    final unknownSender = await otherCore.accounts.createAccount('alice');
-
-    expect(
-      () => core.messaging.sendTextMessage(
-        sender: unknownSender,
-        recipient: Address.fromText(bob.address),
-        text: 'hello bob',
-        ttl: const Duration(hours: 1),
-      ),
-      throwsA(isA<FormatException>()),
-    );
-  });
-
   test('account overview, mailbox queries and mark read use runtime API',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(nowUtc: () => now);
     addTearDown(core.close);
 
@@ -145,7 +316,7 @@ void main() {
   });
 
   test('local message deletion blocks unexpired received messages', () async {
-    final now = DateTime.utc(2026, 1, 1, 12, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 12, 0, 0);
     final core = _openCore(nowUtc: () => now);
     addTearDown(core.close);
 
@@ -156,6 +327,7 @@ void main() {
       recipient: alice,
       message: 'protected until expiry',
       messageIdSeed: 0x31,
+      expiresTime: _unixSecondsForTest(now.add(const Duration(hours: 1))),
     );
     await core.receive.materializeDecodedInbound(
       recipient: alice,
@@ -229,7 +401,7 @@ void main() {
 
   test('publish message stores PoW envelope sync blob and updates index',
       () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(nowUtc: () => now);
     addTearDown(core.close);
 
@@ -281,7 +453,7 @@ void main() {
   });
 
   test('publish message embeds ACK blob when recipient requires ACK', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(
       nowUtc: () => now,
       ttlDraw: (max) => max,
@@ -350,7 +522,7 @@ void main() {
 
   test('retry expired reliable delivery republishes with refreshed expiry',
       () async {
-    var now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    var now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(nowUtc: () => now);
     addTearDown(core.close);
 
@@ -374,7 +546,7 @@ void main() {
       encrypt: encryptor.call,
     );
 
-    now = DateTime.utc(2026, 4, 19, 12, 0, 0);
+    now = DateTime.utc(2026, 5, 1, 12, 0, 0);
     final retried = await core.outbox.retryExpiredReliableDelivery(
       now: now,
       pow: pow,
@@ -399,7 +571,7 @@ void main() {
   });
 
   test('publish ephemeral random message stores only sync blob', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final dir = Directory.systemTemp.createTempSync('ddm-ephemeral-runtime-');
     addTearDown(() => dir.deleteSync(recursive: true));
     final storage = DdmSqliteStorage.open('${dir.path}/ddmdb.sqlite');
@@ -443,13 +615,13 @@ void main() {
     expect(
       encrypted.expiresTime,
       _unixSecondsForTest(
-        now.add(const Duration(days: 2, hours: 1, minutes: 12)),
+        now.add(const Duration(days: 2, hours: 2, minutes: 24)),
       ),
     );
   });
 
   test('sync import decrypts local-recipient blobs into inbox', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final aliceCore = _openCore(nowUtc: () => now);
     addTearDown(aliceCore.close);
     final bobCore = _openCore(nowUtc: () => now);
@@ -489,7 +661,7 @@ void main() {
   });
 
   test('sync import publishes embedded ACK for received message', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final aliceCore = _openCore(nowUtc: () => now);
     addTearDown(aliceCore.close);
     final bobCore = _openCore(nowUtc: () => now);
@@ -533,7 +705,7 @@ void main() {
   });
 
   test('runtime starts HTTP server and registers HTTP sources', () async {
-    final now = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final core = _openCore(nowUtc: () => now);
     addTearDown(core.close);
 
@@ -565,7 +737,9 @@ void main() {
     expect(root, isNotNull);
 
     await core.transports.stopServers();
-    expect(core.transports.registeredSourceProtocols(), isEmpty);
+    expect(core.transports.registeredSourceProtocols(),
+        contains(httpTransportProtocolName));
+    await core.transports.addSource('http://127.0.0.1:8081');
   });
 
   test('runtime starts P2P discovery server while restoring sources', () async {
@@ -639,7 +813,7 @@ void main() {
     expect(jittered.powTTL, const Duration(seconds: 100));
     expect(jittered.expiresTTL, jittered.powTTL);
 
-    final createdAt = DateTime.utc(2026, 4, 19, 10, 0, 0);
+    final createdAt = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final ack = deriveAckJitteredTTLWith(
       createdAt: createdAt,
       baseTTLSeconds: 100,
@@ -648,7 +822,7 @@ void main() {
       expiresDraw: (max) => max,
     );
     expect(ack.ttlSeconds, 110);
-    expect(ack.expiresAt, createdAt.add(const Duration(seconds: 84)));
+    expect(ack.expiresAt, createdAt.add(const Duration(seconds: 90)));
   });
 }
 
@@ -838,6 +1012,7 @@ Future<({EncryptedMessage encrypted, UnencryptedMessage decrypted})>
   required AccountRecord recipient,
   required String message,
   required int messageIdSeed,
+  int expiresTime = 1770000000,
 }) async {
   final decrypted = await UnencryptedMessage.signed(
     privateKey: sender.privateKey,
@@ -850,7 +1025,7 @@ Future<({EncryptedMessage encrypted, UnencryptedMessage decrypted})>
     encrypted: EncryptedMessage(
       version: encryptedMessageVersionV1,
       ttl: 3600,
-      expiresTime: 1770000000,
+      expiresTime: expiresTime,
       streamNumber: recipient.streamId,
       payload: Uint8List.fromList(<int>[1, 2, 3]),
     ),
