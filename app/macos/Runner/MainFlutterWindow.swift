@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow {
   private var appMenuChannel: FlutterMethodChannel?
@@ -91,7 +92,7 @@ class MainFlutterWindow: NSWindow {
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = false
-    panel.allowedFileTypes = ["sqlite"]
+    panel.allowedContentTypes = [UTType(filenameExtension: "sqlite")!]
     panel.directoryURL = fileUrl.deletingLastPathComponent()
     panel.nameFieldStringValue = fileUrl.lastPathComponent
     panel.message = "Choose ddm-sync.sqlite to grant DDM access."
