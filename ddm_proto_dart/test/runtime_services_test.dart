@@ -22,7 +22,6 @@ void main() {
     final worker = RuntimeWorker(
       core: core,
       pow: pow,
-      verifyPow: _acceptPow,
       noiseInterval: const Duration(milliseconds: 10),
       canGenerateNoise: () {
         if (!checkingPower.isCompleted) checkingPower.complete();
@@ -75,7 +74,6 @@ void main() {
     final worker = RuntimeWorker(
       core: core,
       pow: _RecordingPowService(),
-      verifyPow: _acceptPow,
       canGenerateNoise: () async => false,
       log: (_) {},
       onEvent: (event) {
@@ -129,7 +127,6 @@ void main() {
     final worker = RuntimeWorker(
       core: receiver,
       pow: _RecordingPowService(),
-      verifyPow: _acceptPow,
       canGenerateNoise: () async => false,
       log: (_) {},
       onEvent: (event) {
@@ -150,7 +147,7 @@ void main() {
 
     final inbox = receiver.accounts.listMailboxMessages(alice, Mailbox.inbox);
     expect(String.fromCharCodes(inbox.single.payload), 'headless sync');
-    final peer = receiver.sync
+    final peer = receiver.transports
         .listStoredPeers()
         .singleWhere((peer) => peer.id == sourceId);
     expect(peer.rating, closeTo(ratingDefault + ratingGoodBlobReceived, 1e-9));
@@ -584,6 +581,7 @@ void main() {
       randomBytes: (length) => Uint8List.fromList(
         List<int>.generate(length, (index) => (index + 1) & 0xff),
       ),
+      verifyPow: _acceptPow,
     );
     addTearDown(core.close);
     final pow = _RecordingPowService();
@@ -642,14 +640,6 @@ void main() {
 
     final received = await aliceCore.sync.importFrom(
       source: bobCore.sync.localSource,
-      verifyPow: ({
-        required Uint8List modulus,
-        required Uint8List input,
-        required int difficulty,
-        required Uint8List y,
-        required Uint8List pi,
-      }) =>
-          true,
     );
 
     expect(received, 1);
@@ -685,7 +675,6 @@ void main() {
 
     final received = await aliceCore.sync.importFrom(
       source: bobCore.sync.localSource,
-      verifyPow: _acceptPow,
     );
 
     expect(received, 1);
@@ -698,7 +687,6 @@ void main() {
 
     await bobCore.sync.importFrom(
       source: aliceCore.sync.localSource,
-      verifyPow: _acceptPow,
     );
     final outbox = bobCore.accounts.listMailboxMessages(bob, Mailbox.outbox);
     expect(outbox.single.state, messageStateDelivered);
@@ -948,10 +936,7 @@ final class _StubSyncSource implements SyncSource {
       List<SyncBlob?>.filled(ids.length, null);
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {}
+  Future<void> push(SyncBlob blob) async {}
 
   @override
   Future<List<String>> discoverPeers() async => const <String>[];
@@ -1001,6 +986,7 @@ DdmCore _openCore({
     ttlJitterDraw: ttlDraw ?? ((max) => Duration.zero),
     expiresJitterDraw: expiresDraw ?? ((max) => Duration.zero),
     runtimeOptions: runtimeOptions,
+    verifyPow: _acceptPow,
   );
 }
 

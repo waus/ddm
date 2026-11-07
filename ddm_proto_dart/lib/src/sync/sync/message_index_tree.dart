@@ -1,4 +1,4 @@
-part of '../sync.dart';
+part of 'blob_index.dart';
 
 enum _MessageIndexNodeKind { branch, leaf }
 

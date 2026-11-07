@@ -18,7 +18,7 @@ abstract interface class P2pHostBackend {
   Future<List<String>> discoverPeers();
 }
 
-final class DartLibp2pHostBackend implements P2pHostBackend {
+final class DartLibp2pHostBackend implements P2pHostBackend, ShardDiscovery {
   DartLibp2pHostBackend({
     List<String>? bootstrapAddrs,
   }) : bootstrapAddrs = List<String>.from(
@@ -589,7 +589,36 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     }
   }
 
-  Future<List<p2p_addr.AddrInfo>> _findDhtProviders(DateTime deadline) async {
+  @override
+  Future<List<SyncSource>> findShardPeers(StreamId stream) async {
+    final deadline = DateTime.now().toUtc().add(shardDiscoveryTimeout);
+    final providers = <String, p2p_addr.AddrInfo>{};
+    final batches = await Future.wait(List.generate(
+        9,
+        (depth) => _findDhtProviders(deadline,
+            namespace: _shardKey(stream.toHex().substring(0, depth)))));
+    for (final batch in batches) {
+      for (final info in batch) {
+        if (info.id != _host?.id && info.addrs.isNotEmpty) {
+          providers[info.id.toString()] = info;
+        }
+      }
+    }
+    final out = <SyncSource>[];
+    for (final info in providers.values) {
+      final eligible = filterDiscoveryCandidateAddrs(
+          info.addrs.map((a) => a.toString()).toList());
+      final preferred = selectPreferredP2pAddr(eligible);
+      if (preferred != null) {
+        out.add(await createPeerSource(
+            peerAddrWithId(info.id.toString(), preferred)));
+      }
+    }
+    return out;
+  }
+
+  Future<List<p2p_addr.AddrInfo>> _findDhtProviders(DateTime deadline,
+      {String namespace = p2pDiscoveryKey}) async {
     final host = _host;
     if (host == null) {
       return const <p2p_addr.AddrInfo>[];
@@ -627,7 +656,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
       }
       queried += batch.length;
       final responses = await Future.wait(
-        batch.map((info) => _queryDhtProviders(host, info)),
+        batch.map((info) => _queryDhtProviders(host, info, namespace)),
       );
       for (final response in responses) {
         if (response == null) {
@@ -658,6 +687,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
   Future<p2p_dht.Message?> _queryDhtProviders(
     p2p.Host host,
     p2p_addr.AddrInfo info,
+    String namespace,
   ) async {
     p2p_stream.P2PStream? stream;
     try {
@@ -675,7 +705,7 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
           .timeout(peerDiscoveryDhtPeerQueryTimeout);
       final request = p2p_dht.Message(
         type: p2p_dht.MessageType.getProviders,
-        key: _discoveryCid().multihash,
+        key: _discoveryCid(namespace).multihash,
       );
       await stream
           .write(p2p_dht_codec.encodeMessage(request))
@@ -762,6 +792,13 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
     _dhtAdvertiseRunning = true;
     try {
       await dht.provide(_discoveryCid(), true);
+      final source = _source;
+      if (source != null) {
+        final state = await readSyncState(source);
+        for (final prefix in state.coverage) {
+          await dht.provide(_discoveryCid(_shardKey(prefix.value)), true);
+        }
+      }
       _lastDhtAdvertiseAt = DateTime.now().toUtc();
       _p2pDebug('libp2p dht advertised discovery_key=$p2pDiscoveryKey');
     } catch (error) {
@@ -1083,6 +1120,18 @@ final class DartLibp2pHostBackend implements P2pHostBackend {
           blobs: items,
           node: null,
         );
+      case rpcMethodGetState:
+        final state = await readSyncState(source);
+        return RpcResponse(
+            status: rpcStatusOk,
+            error: '',
+            peers: null,
+            coverage: state.coverage.map((p) => p.value).toList(),
+            configs: null,
+            blobs: null,
+            node: state.root == null
+                ? null
+                : _messageIndexNodeToWire(state.root!));
       case rpcMethodGetRoot:
         final node = await source.getMessageIndexRoot();
         return RpcResponse(

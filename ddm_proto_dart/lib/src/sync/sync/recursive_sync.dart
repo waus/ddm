@@ -1,33 +1,12 @@
 part of '../sync.dart';
 
-Future<int> recursiveSync({
-  required String prefix,
-  required MessageIndexNode node,
-  required SyncSource from,
-  required SyncSource to,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
-}) async {
-  return _recursiveSyncWithLimit(
-    prefix: prefix,
-    node: node,
-    from: from,
-    to: to,
-    currentUnixSeconds: currentUnixSeconds,
-    configs: configs,
-    verifyPow: verifyPow,
-  );
-}
-
 Future<void> checkSource({
   required SyncSource source,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
+  required BlobValidator validateBlob,
   Random? random,
+  MessageIndexNode? snapshot,
 }) async {
-  final root = await source.getMessageIndexRoot();
+  final root = snapshot ?? await source.getMessageIndexRoot();
   if (root == null) {
     return;
   }
@@ -50,9 +29,7 @@ Future<void> checkSource({
       source: source,
       node: root,
       rank: rank,
-      currentUnixSeconds: currentUnixSeconds,
-      configs: configs,
-      verifyPow: verifyPow,
+      validateBlob: validateBlob,
     );
   }
 }
@@ -61,9 +38,7 @@ Future<void> _checkSourceSample({
   required SyncSource source,
   required MessageIndexNode node,
   required int rank,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
+  required BlobValidator validateBlob,
 }) async {
   var current = node;
   var currentRank = rank;
@@ -73,9 +48,7 @@ Future<void> _checkSourceSample({
       await _checkSourceLeaf(
         source: source,
         leaf: leaf,
-        currentUnixSeconds: currentUnixSeconds,
-        configs: configs,
-        verifyPow: verifyPow,
+        validateBlob: validateBlob,
       );
       return;
     }
@@ -132,7 +105,7 @@ Future<List<MessageIndexNode?>> _checkSourceLoadChildren(
     }
     final child = await source.getMessageIndexNode(childId);
     if (child == null) {
-      throw SyncSourceException.invalidResponse(
+      throw SyncSourceException.unavailable(
         'sync source ${source.id} returned nil message index node ${childId.toHex()}',
       );
     }
@@ -185,9 +158,7 @@ Future<List<MessageIndexNode?>> _checkSourceLoadChildren(
 Future<void> _checkSourceLeaf({
   required SyncSource source,
   required MessageIndexLeaf leaf,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
+  required BlobValidator validateBlob,
 }) async {
   final results = await source.getSyncBlobs(<SyncBlobId>[leaf.syncBlobId]);
   if (results.length != 1) {
@@ -197,7 +168,7 @@ Future<void> _checkSourceLeaf({
   }
   final blob = results.single;
   if (blob == null) {
-    throw SyncSourceException.invalidResponse(
+    throw SyncSourceException.unavailable(
       'sync source ${source.id} returned nil sync blob ${leaf.syncBlobId.toHex()}',
     );
   }
@@ -209,13 +180,9 @@ Future<void> _checkSourceLeaf({
 
   ({SyncBlobId id, EncryptedMessage encrypted}) validated;
   try {
-    final configTime = _syncBlobConfigTime(blob.payload);
-    validated = await parseAndValidateBlob(
-      blobPayload: blob.payload,
-      currentConfig: configs.configAtUnix(configTime),
-      currentUnixSeconds: configTime,
-      verifyPow: verifyPow,
-    );
+    validated = await validateBlob(blob.payload);
+  } on ExpiredSyncBlob {
+    rethrow;
   } on FormatException catch (error) {
     throw SyncSourceException.invalidResponse(
       'validate sampled sync blob ${leaf.syncBlobId.toHex()}: ${error.message}',
@@ -288,19 +255,18 @@ void _checkSourceChildSlot(
   }
 }
 
-Future<int> _recursiveSyncWithLimit({
+Future<int> recursiveSync({
   required String prefix,
   required MessageIndexNode node,
   required SyncSource from,
   required SyncSource to,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
+  required BlobValidator validateBlob,
   SyncLimit? remaining,
 }) async {
   if (remaining != null && remaining.value <= 0) {
     return 0;
   }
+  node.validate();
   final existing = await to.getMessageIndexNode(node.hash());
   if (existing != null) {
     return 0;
@@ -311,88 +277,37 @@ Future<int> _recursiveSyncWithLimit({
     if (!_syncPrefixMatchesLeaf(prefix, leaf.syncBlobId)) {
       return 0;
     }
-    if (leaf.ttl <= currentUnixSeconds) {
-      return 0;
-    }
     remaining?.value--;
-    await importLeaf(
+    final imported = await importLeaf(
       leaf: leaf,
       from: from,
       to: to,
-      currentUnixSeconds: currentUnixSeconds,
-      configs: configs,
-      verifyPow: verifyPow,
+      validateBlob: validateBlob,
     );
-    return 1;
+    return imported ? 1 : 0;
   }
 
-  final branch = node.branch;
-  if (branch == null) {
-    throw const FormatException('message index node must be leaf or branch');
-  }
-  if (branch.maxTtl < currentUnixSeconds) {
-    return 0;
-  }
-  if (branch.childrenCount == 0) {
-    return 0;
-  }
-
-  if (branch.prefix.length < prefix.length) {
-    if (!prefix.startsWith(branch.prefix)) {
-      return 0;
-    }
-    final childIndex = syncNibbleIndex(prefix.codeUnitAt(branch.prefix.length));
-    final childId = branch.childrenIds[childIndex];
-    if (childId == null) {
-      return 0;
-    }
-    final child = await from.getMessageIndexNode(childId);
-    if (child == null) {
-      throw FormatException(
-        'sync source ${from.id} returned nil message index node ${childId.toHex()}',
-      );
-    }
-    return _recursiveSyncWithLimit(
-      prefix: prefix,
-      node: child,
-      from: from,
-      to: to,
-      currentUnixSeconds: currentUnixSeconds,
-      configs: configs,
-      verifyPow: verifyPow,
-      remaining: remaining,
-    );
-  }
-
-  if (!branch.prefix.startsWith(prefix)) {
-    return 0;
-  }
-
+  final children = await _checkSourceLoadChildren(from, node.branch!);
   var imported = 0;
-  for (final childId in branch.childrenIds) {
-    if (childId == null) {
+  for (final child in children) {
+    if (child == null) continue;
+    final branch = child.branch;
+    if (branch != null &&
+        !branch.prefix.startsWith(prefix) &&
+        !prefix.startsWith(branch.prefix)) {
       continue;
     }
-    final child = await from.getMessageIndexNode(childId);
-    if (child == null) {
-      throw FormatException(
-        'sync source ${from.id} returned nil message index node ${childId.toHex()}',
-      );
-    }
-    imported += await _recursiveSyncWithLimit(
+    imported += await recursiveSync(
       prefix: prefix,
       node: child,
       from: from,
       to: to,
-      currentUnixSeconds: currentUnixSeconds,
-      configs: configs,
-      verifyPow: verifyPow,
+      validateBlob: validateBlob,
       remaining: remaining,
     );
-    if (remaining != null && remaining.value <= 0) {
-      return imported;
-    }
+    if (remaining != null && remaining.value <= 0) return imported;
   }
+
   return imported;
 }
 

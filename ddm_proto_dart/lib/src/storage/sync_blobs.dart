@@ -1,3 +1,5 @@
+import 'sync_blob_store.dart';
+export 'sync_blob_store.dart';
 import 'dart:typed_data';
 
 import 'package:ddm_proto_dart/src/proto/stream.dart';
@@ -5,41 +7,40 @@ import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 import 'package:ddm_proto_dart/src/storage/storage_value_codec.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-final class SyncBlobRecord {
-  SyncBlobRecord({
-    required this.blobId,
-    required Uint8List blob,
-    required this.source,
-    required this.expiresAt,
-  }) : blob = Uint8List.fromList(blob) {
-    if (source.trim().isEmpty) {
-      throw FormatException('sync blob source must not be empty');
-    }
-    if (expiresAt < 0 || expiresAt > 0xffffffff) {
-      throw FormatException(
-        'sync blob expires_at must fit uint32, got $expiresAt',
-      );
-    }
-  }
-
-  final SyncBlobId blobId;
-  final Uint8List blob;
-  final String source;
-  final int expiresAt;
-}
-
-final class SyncBlobIndexRecord {
-  const SyncBlobIndexRecord({required this.blobId, required this.expiresAt});
-
-  final SyncBlobId blobId;
-  final int expiresAt;
-}
-
-final class SyncBlobsRepository {
+final class SyncBlobsRepository implements SyncBlobStore, SyncDeliveryStore {
   SyncBlobsRepository(this._db);
 
   final Database _db;
+  @override
+  List<SyncBlobId> pendingOutgoing(int now, int limit, int replicas) => _db
+      .select(
+          '''SELECT q.blob_id FROM sync_outgoing q JOIN sync_blobs b ON b.blob_id=q.blob_id
+WHERE b.expires_at > ? AND q.next_attempt <= ?
+AND (SELECT COUNT(*) FROM sync_deliveries d WHERE d.blob_id=q.blob_id) < ?
+ORDER BY q.next_attempt, q.blob_id LIMIT ?''', [now, now, replicas, limit])
+      .map((r) => SyncBlobId(r['blob_id'] as Uint8List))
+      .toList();
+  @override
+  List<String> outgoingPeers(SyncBlobId id) => _db
+      .select(
+          'SELECT peer_id FROM sync_deliveries WHERE blob_id=? ORDER BY peer_id',
+          [id.toBytes()])
+      .map((r) => r['peer_id'] as String)
+      .toList();
+  @override
+  void markOutgoingAttempt(SyncBlobId id, int nextAttempt) {
+    _db.execute('UPDATE sync_outgoing SET next_attempt=? WHERE blob_id=?',
+        [nextAttempt, id.toBytes()]);
+  }
 
+  @override
+  void confirmOutgoing(SyncBlobId id, String peer) {
+    _db.execute(
+        'INSERT OR IGNORE INTO sync_deliveries(blob_id,peer_id) VALUES (?,?)',
+        [id.toBytes(), peer]);
+  }
+
+  @override
   bool insertSyncBlob(SyncBlobRecord blob) {
     _db.execute(
       '''
@@ -60,6 +61,7 @@ VALUES (?, ?, ?, ?);
     return asInt(changed.first['n'], 'sync blob rows affected') == 1;
   }
 
+  @override
   SyncBlobRecord? getSyncBlobById(SyncBlobId blobId) {
     final rows = _db.select(
       '''
@@ -102,6 +104,7 @@ ORDER BY blob_id ASC;
     return out;
   }
 
+  @override
   List<SyncBlobIndexRecord> listSyncBlobIndexRecords() {
     final rows = _db.select(
       '''
@@ -119,6 +122,7 @@ FROM sync_blobs;
     }).toList(growable: false);
   }
 
+  @override
   int deleteExpiredSyncBlobs(int now) {
     if (now < 0 || now > 0xffffffff) {
       throw FormatException('sync blob now must fit uint32, got $now');
@@ -135,6 +139,7 @@ WHERE expires_at <= ?;
     return asInt(changed.first['n'], 'expired sync blob rows affected');
   }
 
+  @override
   void deleteSyncBlobById(SyncBlobId blobId) {
     _db.execute(
       '''

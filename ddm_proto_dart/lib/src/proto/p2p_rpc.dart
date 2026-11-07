@@ -84,6 +84,7 @@ final class RpcResponse {
     required this.configs,
     required this.blobs,
     required this.node,
+    this.coverage,
   });
 
   final int status;
@@ -92,6 +93,7 @@ final class RpcResponse {
   final List<Object?>? configs;
   final List<Object?>? blobs;
   final Object? node;
+  final List<Object?>? coverage;
 
   Uint8List toBytes() {
     return ddmCborCodec.encode(<Object?>[
@@ -101,12 +103,13 @@ final class RpcResponse {
       configs,
       blobs,
       node,
+      coverage,
     ]);
   }
 
   static RpcResponse fromBytes(Uint8List payload) {
     final decoded = ddmCborCodec.decode(payload);
-    if (decoded is! List<Object?> || decoded.length != 6) {
+    if (decoded is! List<Object?> || decoded.length != 7) {
       throw const FormatException('decode rpc response');
     }
     final status = decoded[0];
@@ -115,11 +118,13 @@ final class RpcResponse {
     final configs = decoded[3];
     final blobs = decoded[4];
     final node = decoded[5];
+    final coverage = decoded[6];
     if (status is! int ||
         error is! String ||
         (peers != null && peers is! List<Object?>) ||
         (configs != null && configs is! List<Object?>) ||
-        (blobs != null && blobs is! List<Object?>)) {
+        (blobs != null && blobs is! List<Object?>) ||
+        (coverage != null && coverage is! List<Object?>)) {
       throw const FormatException('decode rpc response');
     }
     return RpcResponse(
@@ -129,6 +134,7 @@ final class RpcResponse {
       configs: configs as List<Object?>?,
       blobs: blobs as List<Object?>?,
       node: node,
+      coverage: coverage as List<Object?>?,
     );
   }
 }

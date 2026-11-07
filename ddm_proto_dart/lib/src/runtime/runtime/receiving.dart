@@ -6,19 +6,21 @@ final class ReceiveService {
     required BlobIndex index,
     required AccountManager accountManager,
     required UtcNow nowUtc,
+    required BlobValidator validateBlob,
   })  : _storage = storage,
         _index = index,
         _accountManager = accountManager,
-        _nowUtc = nowUtc;
+        _nowUtc = nowUtc,
+        _validateBlob = validateBlob;
 
   final DdmSqliteStorage _storage;
   final AccountManager _accountManager;
   final UtcNow _nowUtc;
   final BlobIndex _index;
+  final BlobValidator _validateBlob;
 
   Future<bool> materializeImportedEncrypted(
     EncryptedMessage encrypted, {
-    ImportValidationContext? validationContext,
     RecipientPayloadDecryptor decrypt = decryptForRecipientWithDage,
   }) async {
     final candidate = await _accountManager._decryptImportedMessage(
@@ -32,7 +34,6 @@ final class ReceiveService {
       recipient: candidate.account,
       encrypted: encrypted,
       decrypted: candidate.decrypted,
-      validationContext: validationContext,
     );
   }
 
@@ -40,7 +41,6 @@ final class ReceiveService {
     required AccountRecord recipient,
     required EncryptedMessage encrypted,
     required UnencryptedMessage decrypted,
-    ImportValidationContext? validationContext,
   }) async {
     final localRecipient = _requireLocalRecipient(recipient, encrypted);
     try {
@@ -65,7 +65,6 @@ final class ReceiveService {
         stored: existing,
         sender: decrypted.sender,
         recipient: localRecipient,
-        validationContext: validationContext,
       );
       return true;
     }
@@ -103,7 +102,6 @@ final class ReceiveService {
       stored: inbound,
       sender: decrypted.sender,
       recipient: localRecipient,
-      validationContext: validationContext,
     );
     return true;
   }
@@ -133,9 +131,8 @@ final class ReceiveService {
     required MessageRecord stored,
     required Address sender,
     required AccountRecord recipient,
-    required ImportValidationContext? validationContext,
   }) async {
-    if (ackData.isEmpty || validationContext == null) {
+    if (ackData.isEmpty) {
       return;
     }
     if (stored.senderAddress != sender.toText() ||
@@ -144,14 +141,7 @@ final class ReceiveService {
       return;
     }
 
-    final parsedAck = parseSyncBlobPayload(ackData);
-    final configTime = encryptedConfigTimeUnix(parsedAck.encrypted);
-    final validated = await parseAndValidateBlob(
-      blobPayload: ackData,
-      currentConfig: validationContext.configs.configAtUnix(configTime),
-      currentUnixSeconds: configTime,
-      verifyPow: validationContext.verifyPow,
-    );
+    final validated = await _validateBlob(ackData);
     final record = SyncBlobRecord(
       blobId: validated.id,
       blob: ackData,

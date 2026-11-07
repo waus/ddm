@@ -3,9 +3,11 @@ part of '../runtime.dart';
 final class DdmCoreRuntimeOptions {
   const DdmCoreRuntimeOptions({
     this.p2p = const RuntimeP2pOptions(),
+    this.syncTargetLeaves = targetShardLeaves,
     this.transports = const RuntimeTransportOptions(),
   });
 
+  final int syncTargetLeaves;
   final RuntimeP2pOptions p2p;
   final RuntimeTransportOptions transports;
 }
@@ -22,7 +24,6 @@ enum Mailbox {
 final class DdmCore {
   DdmCore._({
     required DdmSqliteStorage storage,
-    required BlobIndex index,
     required this.accounts,
     required this.contacts,
     required this.config,
@@ -33,11 +34,9 @@ final class DdmCore {
     required this.transports,
     required this.p2pIdentity,
     required this.runtimeOptions,
-  })  : _storage = storage,
-        _index = index;
+  }) : _storage = storage;
 
   final DdmSqliteStorage _storage;
-  final BlobIndex _index;
   final AccountsService accounts;
   final ContactsService contacts;
   final ConfigService config;
@@ -51,6 +50,7 @@ final class DdmCore {
 
   static DdmCore open(
     String workdir, {
+    required PowProofVerifier verifyPow,
     UtcNow? nowUtc,
     RandomBytes? randomBytes,
     DurationJitterDraw? ttlJitterDraw,
@@ -72,6 +72,7 @@ final class DdmCore {
       return fromStorage(
         storage,
         nowUtc: nowUtc,
+        verifyPow: verifyPow,
         randomBytes: randomBytes,
         ttlJitterDraw: ttlJitterDraw,
         expiresJitterDraw: expiresJitterDraw,
@@ -85,6 +86,7 @@ final class DdmCore {
 
   static DdmCore fromStorage(
     DdmSqliteStorage storage, {
+    required PowProofVerifier verifyPow,
     UtcNow? nowUtc,
     RandomBytes? randomBytes,
     DurationJitterDraw? ttlJitterDraw,
@@ -110,16 +112,29 @@ final class DdmCore {
       nowUtc: now,
       randomBytes: bytes,
     );
-    final index = BlobIndex.fromStorage(storage: storage, nowUtc: now);
+    final index = loadBlobIndex(blobs: storage.syncBlobs, nowUtc: now);
+    Future<ValidatedBlob> validateBlob(Uint8List payload) => validateSyncBlob(
+          payload: payload,
+          configAtUnix: configManager.configAtUnix,
+          currentUnixSeconds: unixSecondsUint32(now()),
+          verifyPow: verifyPow,
+        );
     final receive = ReceiveService(
+      validateBlob: validateBlob,
       index: index,
       storage: storage,
       accountManager: accountManager,
       nowUtc: now,
     );
     final sync = SyncService(
+      validateBlob: validateBlob,
+      shards: ShardPolicy(
+          nowUtc: now,
+          targetLeaves: runtimeOptions.syncTargetLeaves,
+          streams: () =>
+              storage.accounts.listAccounts().map((a) => a.streamId)),
       index: index,
-      storage: storage,
+      blobs: storage.syncBlobs,
       configs: configManager,
       nowUtc: now,
       onImportedBlob: receive.materializeImportedEncrypted,
@@ -145,7 +160,6 @@ final class DdmCore {
       p2pPublicRelay: runtimeOptions.p2p.publicRelay,
     );
     final core = DdmCore._(
-      index: index,
       storage: storage,
       accounts: accounts,
       contacts: contacts,
@@ -164,7 +178,6 @@ final class DdmCore {
   void close() {
     transports.close();
     sync.close();
-    _index.close();
     _storage.close();
   }
 }

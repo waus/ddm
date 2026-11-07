@@ -1,16 +1,14 @@
+import '../../proto/stream.dart';
 import 'dart:async';
+import '../../proto/sync_state.dart';
 
-import 'package:ddm_proto_dart/src/proto/config_manager.dart';
 import 'package:ddm_proto_dart/src/proto/config_record.dart';
 import 'package:ddm_proto_dart/src/proto/envelope.dart';
 import 'package:ddm_proto_dart/src/proto/message_index_node.dart';
-import 'package:ddm_proto_dart/src/proto/sync_blob.dart';
 import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 
 typedef ImportedEncryptedHandler = FutureOr<void> Function(
-  EncryptedMessage encrypted, {
-  ImportValidationContext? validationContext,
-});
+    EncryptedMessage encrypted);
 
 typedef SourcePermutation = List<int> Function(int length);
 
@@ -35,20 +33,29 @@ abstract interface class SyncSource {
 
   Future<List<SyncBlob?>> getSyncBlobs(List<SyncBlobId> ids);
 
-  Future<void> push(SyncBlob blob,
-      {ImportValidationContext? validationContext});
+  Future<void> push(SyncBlob blob);
 
   Future<List<String>> discoverPeers();
 
   void stop();
 }
 
-final class ImportValidationContext {
-  const ImportValidationContext({
-    required this.configs,
-    required this.verifyPow,
-  });
+abstract interface class SyncStateSource {
+  Future<SyncState> getSyncState();
+}
 
-  final ConfigManager configs;
-  final PowProofVerifier verifyPow;
+Future<SyncState> readSyncState(SyncSource source) async {
+  if (source is SyncStateSource) {
+    return (source as SyncStateSource).getSyncState();
+  }
+  return SyncState(
+      root: await source.getMessageIndexRoot(), coverage: [StreamPrefix('')]);
+}
+
+abstract interface class ShardDiscovery {
+  Future<List<SyncSource>> findShardPeers(StreamId stream);
+}
+
+abstract interface class PeerIdentitySource {
+  String get peerIdentity;
 }

@@ -16,7 +16,7 @@ dependencies:
   vdfrsa:
     git:
       url: https://github.com/waus/vdf
-      ref: v0.4.4
+      ref: 1fb96f66557e9272c6b3df22851c5f8fb9ecb648
   dart_libp2p:
     git:
       url: https://github.com/waus/dart_libp2p

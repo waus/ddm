@@ -40,3 +40,5 @@ const int coseAlgorithmEdDsa = -8;
 
 bool isAddressPolicySupported(int policy) =>
     (policy & ~addressPolicyAckExpected) == 0;
+
+const int maxSyncCoveragePrefixes = 256;

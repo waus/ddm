@@ -1,7 +1,11 @@
 part of '../p2p.dart';
 
 final class P2pSyncTransportServer
-    implements SyncTransportServer, SyncTransport, SyncPeerDiscovery {
+    implements
+        SyncTransportServer,
+        SyncTransport,
+        SyncPeerDiscovery,
+        ShardDiscovery {
   P2pSyncTransportServer({
     required P2pIdentityLoader loadIdentity,
     SyncSource? source,
@@ -20,6 +24,15 @@ final class P2pSyncTransportServer
 
   final P2pIdentityLoader _loadIdentity;
   final P2pHostBackend _backend;
+  @override
+  Future<List<SyncSource>> findShardPeers(StreamId stream) async {
+    await _ensureRunning();
+    final backend = _backend;
+    return backend is ShardDiscovery
+        ? await (backend as ShardDiscovery).findShardPeers(stream)
+        : <SyncSource>[];
+  }
+
   final bool publicRelay;
   final List<String> listenAddrs;
   final P2pDiscoveryPeerPool discoveryPool;

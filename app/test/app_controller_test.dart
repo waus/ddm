@@ -316,9 +316,18 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 150));
     controller.close();
 
-    final core = DdmCore.open(workspace.path);
+    final core = DdmCore.open(
+      workspace.path,
+      verifyPow: (
+              {required modulus,
+              required input,
+              required difficulty,
+              required y,
+              required pi}) =>
+          true,
+    );
     addTearDown(core.close);
-    final peer = core.sync.listStoredPeers().singleWhere(
+    final peer = core.transports.listStoredPeers().singleWhere(
           (peer) => peer.id == Uri.file(sourcePath).toString(),
         );
     expect(
@@ -384,9 +393,18 @@ void main() {
 
       controller.close();
 
-      final core = DdmCore.open(workspace.path);
+      final core = DdmCore.open(
+        workspace.path,
+        verifyPow: (
+                {required modulus,
+                required input,
+                required difficulty,
+                required y,
+                required pi}) =>
+            true,
+      );
       addTearDown(core.close);
-      final peer = core.sync
+      final peer = core.transports
           .listStoredPeers()
           .singleWhere((peer) => peer.id == sourceId);
       expect(
@@ -400,7 +418,16 @@ void main() {
     final workspace = Directory.systemTemp.createTempSync('ddm-app-read-');
     addTearDown(() => workspace.deleteSync(recursive: true));
 
-    final core = DdmCore.open(workspace.path);
+    final core = DdmCore.open(
+      workspace.path,
+      verifyPow: (
+              {required modulus,
+              required input,
+              required difficulty,
+              required y,
+              required pi}) =>
+          true,
+    );
     final now = DateTime.now().toUtc();
     final alice = await core.accounts.createAccount('alice');
     final bob = await core.accounts.createAccount('bob');
@@ -473,7 +500,16 @@ void main() {
 
     controller.close();
 
-    final core = DdmCore.open(workspace.path);
+    final core = DdmCore.open(
+      workspace.path,
+      verifyPow: (
+              {required modulus,
+              required input,
+              required difficulty,
+              required y,
+              required pi}) =>
+          true,
+    );
     addTearDown(core.close);
     expect(core.sync.totalSyncedMessages, greaterThanOrEqualTo(1));
     expect(core.outbox.listPendingMessages(), isEmpty);
@@ -672,13 +708,10 @@ final class _MemorySyncSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     _blobs[blob.id] = blob;
     index.add(
-        blob.id, encryptedMessageFromPowEnvelope(blob.payload).expiresTime);
+        blob.id, parseSyncBlobPayload(blob.payload).encrypted.expiresTime);
   }
 
   @override

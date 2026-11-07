@@ -7,11 +7,7 @@ import 'package:ddm_proto_dart/src/pow/pow_service.dart';
 import 'package:vdfrsa/vdf.dart' as vdf;
 
 final class VdfPowService implements PowService {
-  const VdfPowService({
-    this.progressInterval = const Duration(milliseconds: 200),
-  });
-
-  final Duration progressInterval;
+  const VdfPowService();
 
   @override
   Future<PowSolveResult> solve({
@@ -23,20 +19,17 @@ final class VdfPowService implements PowService {
     final engine = _newWesolowski(modulus, difficulty);
     final startedAt = Stopwatch()..start();
 
-    final proof = await engine.proveAsync(
+    final proof = await engine.prove(
       copyBytes(inputHash),
       difficulty,
-      progressInterval: progressInterval,
-      onProgress: onProgress == null
-          ? null
-          : (progress) {
-              onProgress(
-                PowSolveProgress(
-                  completion: _normalizeCompletion(progress.completion),
-                  elapsed: progress.elapsed,
-                ),
-              );
-            },
+      onProgress: (progress) {
+        onProgress?.call(
+          PowSolveProgress(
+            completion: progress.completion,
+            elapsed: progress.elapsed,
+          ),
+        );
+      },
     );
 
     return PowSolveResult(
@@ -147,14 +140,4 @@ BigInt _bigIntFromBytes(Uint8List bytes) {
     value = (value << 8) | BigInt.from(byte);
   }
   return value;
-}
-
-double _normalizeCompletion(double completion) {
-  if (completion <= 0) {
-    return 0;
-  }
-  if (completion >= 1) {
-    return 1;
-  }
-  return completion;
 }

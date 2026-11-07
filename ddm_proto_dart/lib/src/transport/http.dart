@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../proto/sync_state.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,10 +11,10 @@ import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 import 'package:ddm_proto_dart/src/sync/constants.dart';
 import 'package:ddm_proto_dart/src/sync/sync.dart';
 import 'package:ddm_proto_dart/src/transport/constants.dart';
-import 'package:ddm_proto_dart/src/transport/errors.dart';
+import 'package:ddm_proto_dart/src/proto/sync_errors.dart';
 import 'package:ddm_proto_dart/src/transport/server.dart';
 
-final class HttpSyncSourceClient implements SyncSource {
+final class HttpSyncSourceClient implements SyncSource, SyncStateSource {
   HttpSyncSourceClient(
     String upstream, {
     HttpClient? client,
@@ -50,6 +51,24 @@ final class HttpSyncSourceClient implements SyncSource {
       }).toList(growable: false);
     } on FormatException catch (error) {
       throw SyncSourceException.invalidResponse(error.message, details: error);
+    }
+  }
+
+  @override
+  Future<SyncState> getSyncState() async {
+    try {
+      final json = await _doJson('GET', 'state');
+      final raw = json['coverage'];
+      if (raw is! List) throw const FormatException('invalid coverage');
+      return SyncState(
+          root: json['root'] == null
+              ? null
+              : messageIndexNodeFromHttp(
+                  _requiredMapValue(json['root'], 'root')),
+          coverage: raw.map(
+              (p) => StreamPrefix(_requiredStringValue(p, 'coverage prefix'))));
+    } on FormatException catch (e) {
+      throw SyncSourceException.invalidResponse(e.message, details: e);
     }
   }
 
@@ -145,10 +164,7 @@ final class HttpSyncSourceClient implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     final body = jsonEncode(<String, Object?>{
       'id': blob.id.toHex(),
       'payload': bytesToHex(blob.payload),
@@ -327,6 +343,8 @@ final class HttpSyncSourceServer implements SyncTransportServer {
         await _handleLookup(request, source);
       } else if (path == '/push') {
         await _handlePush(request, source);
+      } else if (path == '/state') {
+        await _handleState(request, source);
       } else if (path == '/root') {
         await _handleRoot(request, source);
       } else if (path.startsWith('/node/')) {
@@ -468,6 +486,15 @@ final class HttpSyncSourceServer implements SyncTransportServer {
     );
     await source.push(SyncBlob(id: id, payload: payload));
     await _writeJson(request.response, HttpStatus.ok, <String, Object?>{});
+  }
+
+  Future<void> _handleState(HttpRequest request, SyncSource source) async {
+    if (!await _requireMethod(request, 'GET')) return;
+    final state = await readSyncState(source);
+    await _writeJson(request.response, HttpStatus.ok, {
+      'root': state.root == null ? null : messageIndexNodeToHttp(state.root!),
+      'coverage': state.coverage.map((p) => p.value).toList()
+    });
   }
 
   Future<void> _handleRoot(HttpRequest request, SyncSource source) async {

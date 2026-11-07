@@ -1,9 +1,11 @@
 import 'package:ddm_proto_dart/src/storage/migration.dart';
 import 'package:ddm_proto_dart/src/storage/migrations/0001_init.dart';
+import 'migrations/0002_sync_outgoing.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 const List<StorageMigration> storageMigrations = <StorageMigration>[
   migration0001Init,
+  migration0002SyncOutgoing,
 ];
 
 final class DatabaseMigrationException implements Exception {

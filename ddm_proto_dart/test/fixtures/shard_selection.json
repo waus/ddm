@@ -1,0 +1,161 @@
+[
+  {
+    "name": "empty",
+    "target": 2,
+    "leaves": [],
+    "accounts": [
+      "10000000",
+      "20000000"
+    ],
+    "coverage": [
+      ""
+    ]
+  },
+  {
+    "name": "at_target",
+    "target": 2,
+    "leaves": [
+      "10000000",
+      "20000000"
+    ],
+    "accounts": [
+      "10000000"
+    ],
+    "coverage": [
+      ""
+    ]
+  },
+  {
+    "name": "first_split",
+    "target": 1,
+    "leaves": [
+      "10000000",
+      "20000000"
+    ],
+    "accounts": [
+      "10000000"
+    ],
+    "coverage": [
+      "1"
+    ]
+  },
+  {
+    "name": "compressed_path",
+    "target": 1,
+    "leaves": [
+      "12345670",
+      "12345671"
+    ],
+    "accounts": [
+      "12345670"
+    ],
+    "coverage": [
+      "12345670"
+    ]
+  },
+  {
+    "name": "compressed_absent",
+    "target": 1,
+    "leaves": [
+      "12345670",
+      "12345671"
+    ],
+    "accounts": [
+      "12000000"
+    ],
+    "coverage": [
+      "120"
+    ]
+  },
+  {
+    "name": "absent_root_child",
+    "target": 1,
+    "leaves": [
+      "12345670",
+      "12345671"
+    ],
+    "accounts": [
+      "30000000"
+    ],
+    "coverage": [
+      "3"
+    ]
+  },
+  {
+    "name": "dense_receiver",
+    "target": 1,
+    "leaves": [
+      "12345678",
+      "12345678"
+    ],
+    "accounts": [
+      "12345678"
+    ],
+    "coverage": [
+      "12345678"
+    ]
+  },
+  {
+    "name": "overlapping_accounts",
+    "target": 2,
+    "leaves": [
+      "11000000",
+      "12000000",
+      "20000000"
+    ],
+    "accounts": [
+      "11000000",
+      "12000000"
+    ],
+    "coverage": [
+      "1"
+    ]
+  },
+  {
+    "name": "disjoint_accounts",
+    "target": 1,
+    "leaves": [
+      "10000000",
+      "20000000"
+    ],
+    "accounts": [
+      "10000000",
+      "20000000"
+    ],
+    "coverage": [
+      "1",
+      "2"
+    ]
+  },
+  {
+    "name": "sparse_receiver",
+    "target": 2,
+    "leaves": [
+      "10000001",
+      "10000002",
+      "10000003",
+      "20000000"
+    ],
+    "accounts": [
+      "20000000"
+    ],
+    "coverage": [
+      "2"
+    ]
+  },
+  {
+    "name": "duplicate_receiver",
+    "target": 1,
+    "leaves": [
+      "10000000",
+      "20000000"
+    ],
+    "accounts": [
+      "10000000",
+      "10000000"
+    ],
+    "coverage": [
+      "1"
+    ]
+  }
+]

@@ -81,24 +81,55 @@ blob MUST NOT be imported, even when it belongs to a retained snapshot.
 
 ![Two peers compare trees and exchange missing blobs](assets/tree-sync.svg)
 
-1. Exchange offered prefixes, requested prefixes, and roots for the advertised
-   coverage. Distinguish a covered empty range from a range the peer does not
-   serve. Coverage claims describe local availability.
-2. Select intersections: pull where local requests overlap remote offers; push
-   where remote requests overlap local offers. No overlap means no message sync.
-3. Capture roots and compare matching ranges. Skip equal hashes; recursively
-   compare differing branches by prefix, accounting for compressed paths.
-4. Fetch remote-only leaves and their blobs; validate before insertion. Offer
-   local-only blobs within the peer's requested ranges. Each peer retains its
+1. Read the peer's root and maintained stream prefixes together. Prefixes use
+   zero to eight lowercase hexadecimal nibbles; `""` covers all streams and an
+   empty list offers no maintained range. The root includes every retained live
+   blob, including outgoing blobs outside the maintained ranges.
+2. Select intersections of local and remote maintained ranges for ordinary
+   node-to-node synchronization.
+3. Compare matching ranges. Skip equal hashes; recursively compare differing
+   branches by prefix, accounting for compressed paths.
+4. Fetch missing blobs and validate before insertion. Each peer retains its
    valid local blobs when the other peer lacks them.
-5. Finish the bounded snapshot walk, then repeat with fresh roots. Concurrent
-   publications are handled in later rounds.
+5. Repeat with fresh roots. A collected snapshot ends the walk; the next round
+   starts from the latest root.
 
-Under high load, a node can narrow synchronization to one prefix, or several
-prefixes required by its addresses and privacy policy. Descendant counts let it
-estimate load before downloading the blobs. Counts alone do not measure byte
-size or arrival rate; local storage and bandwidth budgets also constrain scope.
-Peers with different coverage compare overlapping subtrees.
+Each account independently selects a range containing its receiver stream.
+Selection starts at `minSplit`. While the observed leaf count exceeds the
+target (default: 100,000) and depth is below `maxSplit`, descend one nibble
+toward that stream. Stop at the target or fewer leaves, an empty range, or
+`maxSplit`. Compressed paths follow
+the same logical nibble depths. The defaults are `minSplit = 0` and
+`maxSplit = 8`; the target applies separately to each account.
+
+Selections live in node memory and apply across all sources. Accounts with the
+same receiver stream share a selection. The node advertises and synchronizes
+the normalized union of selected ranges; overlapping ranges share one traversal.
+Removing an account preserves the selections of remaining accounts. A node
+without accounts uses one random stream as its anchor for the process lifetime.
+Restarting recalculates coverage from the local tree and subsequent observations.
+Automatic synchronization evaluates the local tree before connecting sources.
+
+Every ten minutes, each account reselects from `minSplit`, using a fresh local
+snapshot and available density observations for its stream from the preceding
+ten minutes. At each prefix, use the maximum observed leaf count across sources.
+Replica counts are never summed. Keep the latest successful density observation
+per source; a slower earlier check cannot replace a newer successful observation.
+Observation age starts when snapshot checking begins. Failed reads and failed
+validation do not refresh an observation. Account membership is checked again
+before applying results of an asynchronous walk.
+
+Between reassessments, higher observed density can narrow coverage immediately.
+The background loop performs reassessment when due, including when no remote
+sources are reachable. Sampling precedes narrowing based on remote density.
+Partial observations provide lower bounds on network population, so expansion
+is provisional: subsequent observations can immediately narrow the range again.
+
+Every selected range is synchronized in full, including ranges exceeding the
+target at `maxSplit`. A depth of eight preserves the whole receiver stream.
+Existing blobs outside the selected ranges remain available until expiry.
+Counts measure leaves; byte size and arrival rate require separate resource
+policies.
 
 Hash-derived stream assignment is expected to spread recipients approximately
 uniformly; traffic can still concentrate on a particular recipient. Nodes
@@ -125,11 +156,32 @@ self-consistent root alone proves neither valid PoW nor blob availability.
 Invalid proofs, timeouts, expired blobs, and collected snapshots are distinct
 outcomes of verification.
 
+## Outgoing Delivery and Transport Capabilities
+
+A locally published blob enters the local tree and a durable outgoing queue.
+The queue also includes protocol-generated publications such as acknowledgments
+and cover traffic. Publication expiry bounds delivery attempts.
+
+- **Discoverable networks:** locate nodes advertising a prefix that contains
+  the destination stream. Read their coverage, check whether they already have
+  the blob, and push missing blobs. Record successful transfers by peer identity;
+  different addresses of one peer count once. The default target is three peers,
+  with retries after 30 seconds. These receipts indicate replica acceptance;
+  recipient acknowledgment remains a separate mechanism.
+- **Fixed stores:** import the selected ranges and export all locally held live
+  blobs, including blobs outside local coverage. A removable database can carry
+  publications between otherwise disconnected shards. Exporting to a fixed
+  store leaves the P2P delivery queue eligible for further delivery.
+
+Delivery requires a reachable replica of the destination range or a sequence of
+fixed-store exchanges carrying the blob before expiry. Queue receipts do not
+prove continued storage or independent ownership of accepting peers.
+
 ## Transport Contract
 
-Transport specifications define offered/requested prefix descriptors, their
-snapshot binding, and explicit empty, unserved, and unavailable responses.
+`GetSyncState` returns the root snapshot and maintained prefixes. A fixed store
+can expose its root with full coverage. `FindShardPeers(stream)` belongs to
+transports supporting range discovery. Blob validation and tree traversal use
+the same source operations for both transport capabilities.
 
-See [source operations and types](source-statistics-concept.md). This document
-defines shared tree semantics; transport documents define encoding and
-batching.
+See [source operations and types](source-statistics-concept.md) for encoding.

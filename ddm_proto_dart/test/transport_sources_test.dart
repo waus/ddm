@@ -52,6 +52,9 @@ void main() {
     expect(configRecordVersion(configs.single), 1);
     expect(configRecordPayload(configs.single), <int>[9]);
 
+    final state = await readSyncState(client);
+    expect(state.coverage, [StreamPrefix('')]);
+    expect(state.root!.hash(), source.index.latestRoot().id);
     final root = await client.getMessageIndexRoot();
     expect(root, isNotNull);
     expect(root!.hash(), source.index.latestRoot().id);
@@ -476,14 +479,11 @@ final class _MemorySyncSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     pushed.add(blob);
     _blobs[blob.id] = blob;
     index.add(
-        blob.id, encryptedMessageFromPowEnvelope(blob.payload).expiresTime);
+        blob.id, parseSyncBlobPayload(blob.payload).encrypted.expiresTime);
   }
 
   @override

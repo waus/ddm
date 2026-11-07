@@ -1,4 +1,13 @@
-part of '../sync.dart';
+import 'package:ddm_proto_dart/src/proto/_bytes.dart';
+import 'package:ddm_proto_dart/src/proto/constants.dart';
+import 'package:ddm_proto_dart/src/proto/message_index_node.dart';
+import 'package:ddm_proto_dart/src/proto/sync_source.dart';
+import 'package:ddm_proto_dart/src/sync/constants.dart';
+import 'package:ddm_proto_dart/src/sync/sync/sync_time.dart';
+import 'dart:typed_data';
+import 'prefix_validation.dart';
+
+part 'message_index_tree.dart';
 
 final class BlobIndexInitRecord {
   const BlobIndexInitRecord(
@@ -29,57 +38,21 @@ final class BlobIndexAddResult {
 
 final class BlobIndex {
   BlobIndex({
-    required UtcNow nowUtc,
-    DdmSqliteStorage? storage,
+    required DateTime Function() nowUtc,
     Iterable<BlobIndexInitRecord> preload = const <BlobIndexInitRecord>[],
     this.rootRetention = blobStorageRootRetention,
-    Duration? garbageCollectionInterval,
-  })  : _nowUtc = nowUtc,
-        _storage = storage {
+  }) : _nowUtc = nowUtc {
     _appendRoot(
         _MessageIndexNode.emptyBranch(), syncUnixSeconds(_nowUtc()), null);
     _preload(preload);
-    if (garbageCollectionInterval != null) {
-      _garbageCollectionTimer = Timer.periodic(
-        garbageCollectionInterval,
-        (_) => runGarbageCollection(_nowUtc()),
-      );
-    }
   }
 
-  factory BlobIndex.fromStorage({
-    required DdmSqliteStorage storage,
-    required UtcNow nowUtc,
-  }) {
-    final now = syncUnixSeconds(nowUtc());
-    storage.syncBlobs.deleteExpiredSyncBlobs(now);
-    final preload = storage.syncBlobs
-        .listSyncBlobIndexRecords()
-        .where((record) => record.expiresAt > now)
-        .map(
-          (record) => BlobIndexInitRecord(
-            syncBlobId: record.blobId,
-            expiresAt: record.expiresAt,
-          ),
-        )
-        .toList(growable: false);
-    return BlobIndex(
-      storage: storage,
-      nowUtc: nowUtc,
-      preload: preload,
-      garbageCollectionInterval: blobStorageGcInterval,
-    );
-  }
-
-  final UtcNow _nowUtc;
-  final DdmSqliteStorage? _storage;
+  final DateTime Function() _nowUtc;
   final Duration rootRetention;
   final Map<MessageIndexNodeId, _IndexedMessageIndexNode> _hashes =
       <MessageIndexNodeId, _IndexedMessageIndexNode>{};
   final List<_BlobIndexRootEntry> _roots = <_BlobIndexRootEntry>[];
   int _rootsHead = 0;
-  Timer? _garbageCollectionTimer;
-  bool _closed = false;
 
   BlobIndexAddResult add(SyncBlobId id, int expiresAt) {
     final now = syncUnixSeconds(_nowUtc());
@@ -109,30 +82,14 @@ final class BlobIndex {
   }
 
   List<SyncBlobId> runGarbageCollection(DateTime now) {
-    if (_closed) {
-      return const <SyncBlobId>[];
-    }
     final nowSeconds = syncUnixSeconds(now.toUtc());
     _collectExpiredMessages(nowSeconds);
-    final deleted = _collectObsoleteRoots(nowSeconds);
-    for (final id in deleted) {
-      _storage?.syncBlobs.deleteSyncBlobById(id);
-    }
-    return deleted;
-  }
-
-  void close() {
-    if (_closed) {
-      return;
-    }
-    _closed = true;
-    _garbageCollectionTimer?.cancel();
-    _garbageCollectionTimer = null;
+    return _collectObsoleteRoots(nowSeconds);
   }
 
   int get totalBlobs {
-    final root = latestRoot().node.branch;
-    return root?.childrenCount ?? 0;
+    final root = latestRoot().node;
+    return root.leaf != null ? 1 : root.branch!.childrenCount;
   }
 
   void _preload(Iterable<BlobIndexInitRecord> preload) {
@@ -152,10 +109,10 @@ final class BlobIndex {
 
   void _collectExpiredMessages(int threshold) {
     final previousRoot = _latestRoot();
-    if (previousRoot.node.node.childrenCount == 0) {
+    if (previousRoot.node.node.childrenCountValue == 0) {
       return;
     }
-    final minChildTTL = previousRoot.node.node.minChildTTL;
+    final minChildTTL = previousRoot.node.node.minChildTTLValue;
     if (minChildTTL == 0 || minChildTTL > threshold) {
       return;
     }

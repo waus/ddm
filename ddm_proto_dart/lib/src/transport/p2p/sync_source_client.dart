@@ -1,16 +1,42 @@
 part of '../p2p.dart';
 
-final class _P2pSyncSourceClient implements SyncSource {
+final class _P2pSyncSourceClient
+    implements SyncSource, SyncStateSource, PeerIdentitySource {
   _P2pSyncSourceClient({required this.id, required this.backend});
 
   @override
   final String id;
   final DartLibp2pHostBackend backend;
   bool _stopped = false;
+  @override
+  String get peerIdentity => 'p2p:${id.split('/p2p/').last}';
+  @override
+  Future<SyncState> getSyncState() async {
+    _ensureOpen();
+    final response = await backend.request(
+        id,
+        const RpcRequest(
+            method: rpcMethodGetState, syncBlobIds: null, nodeId: null));
+    try {
+      return SyncState(
+          root: response.node == null
+              ? null
+              : _messageIndexNodeFromWire(response.node!),
+          coverage: (response.coverage ?? []).map((p) {
+            if (p is! String) {
+              throw const FormatException('invalid coverage prefix');
+            }
+            return StreamPrefix(p);
+          }));
+    } on FormatException catch (e) {
+      throw SyncSourceException.invalidResponse(e.message, details: e);
+    }
+  }
 
   @override
   SyncSourceFlags get flags => const SyncSourceFlags(
-        syncSourceFlagSupportTree |
+        syncSourceFlagRouted |
+            syncSourceFlagSupportTree |
             syncSourceFlagSupportPeerExchange |
             syncSourceFlagWritable,
       );
@@ -141,10 +167,7 @@ final class _P2pSyncSourceClient implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     _ensureOpen();
     await backend.request(
       id,

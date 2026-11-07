@@ -2,32 +2,33 @@ part of '../sync.dart';
 
 final class SyncService {
   SyncService({
-    required DdmSqliteStorage storage,
+    required SyncBlobStore blobs,
     required ConfigManager configs,
+    required BlobValidator validateBlob,
     required UtcNow nowUtc,
     ImportedEncryptedHandler? onImportedBlob,
     BlobIndex? index,
-  })  : _storage = storage,
+    ShardPolicy? shards,
+  })  : _validateBlob = validateBlob,
         _configs = configs,
-        _nowUtc = nowUtc,
         localSource = LocalSyncSource(
           index: index,
-          storage: storage,
-          configs: configs,
+          shards: shards ?? ShardPolicy(nowUtc: nowUtc),
+          blobs: blobs,
+          validateBlob: validateBlob,
+          configs: configs.records,
           nowUtc: nowUtc,
           onImportedBlob: onImportedBlob,
         );
 
-  final DdmSqliteStorage _storage;
+  final BlobValidator _validateBlob;
   final ConfigManager _configs;
-  final UtcNow _nowUtc;
   final LocalSyncSource localSource;
 
   int get totalSyncedMessages => localSource.index.totalBlobs;
 
   Future<int> importFrom({
     required SyncSource source,
-    required PowProofVerifier verifyPow,
     String prefix = '',
   }) async {
     final sourceConfigs = await source.getConfigs();
@@ -38,39 +39,42 @@ final class SyncService {
       return 0;
     }
     final normalizedPrefix = StreamId.normalizePrefix(prefix);
-    final currentUnixSeconds = syncUnixSeconds(_nowUtc());
-    final root = await source.getMessageIndexRoot();
+    await refreshCoverage();
+    final state = await readSyncState(source);
+    await localSource.shards.select(source, state, _validateBlob);
+    var ranges = intersectCoverage(localSource.shards.coverage, state.coverage);
+    ranges = intersectCoverage(ranges, [StreamPrefix(normalizedPrefix)]);
     var imported = 0;
-    if (root != null) {
-      imported = await recursiveSync(
-        prefix: normalizedPrefix,
-        node: root,
-        from: source,
-        to: localSource,
-        currentUnixSeconds: currentUnixSeconds,
-        configs: _configs,
-        verifyPow: verifyPow,
-      );
+    for (final p in ranges) {
+      if (state.root != null) {
+        imported += await recursiveSync(
+            prefix: p.value,
+            node: state.root!,
+            from: source,
+            to: localSource,
+            validateBlob: _validateBlob);
+      }
     }
     if (source.flags.has(syncSourceFlagWritable)) {
-      final localRoot = await localSource.getMessageIndexRoot();
-      await _recursiveSyncWithLimit(
-        prefix: normalizedPrefix,
-        node: localRoot,
-        from: localSource,
-        to: source,
-        currentUnixSeconds: currentUnixSeconds,
-        configs: _configs,
-        verifyPow: verifyPow,
-        remaining: SyncLimit(reverseSyncPushLimit),
-      );
+      if (!source.flags.has(syncSourceFlagRouted)) ranges = [StreamPrefix('')];
+      final root = await localSource.getMessageIndexRoot();
+      for (final p in ranges) {
+        await recursiveSync(
+            prefix: p.value,
+            node: root,
+            from: localSource,
+            to: source,
+            validateBlob: _validateBlob);
+      }
     }
     return imported;
   }
 
-  Future<List<ConfigRecord>> getConfigs() => localSource.getConfigs();
-
-  List<PeerRecord> listStoredPeers() => _storage.peers.listPeers();
+  Future<void> refreshCoverage() async {
+    await localSource.shards.select(
+        localSource, await localSource.getSyncState(), _validateBlob,
+        local: true);
+  }
 
   void close() {
     localSource.stop();

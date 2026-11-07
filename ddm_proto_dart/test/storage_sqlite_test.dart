@@ -25,7 +25,7 @@ void main() {
     try {
       final version =
           db.select('SELECT number, dirty FROM schema_version LIMIT 1;').single;
-      expect(version['number'], 1);
+      expect(version['number'], 2);
       expect(version['dirty'], 0);
       final config = db.select('SELECT seqno FROM config LIMIT 1;').single;
       expect(config['seqno'], 1);
@@ -75,7 +75,7 @@ CREATE TABLE schema_version (
   dirty BOOLEAN NOT NULL
 );
 ''');
-      db.execute('INSERT INTO schema_version(number, dirty) VALUES(2, FALSE);');
+      db.execute('INSERT INTO schema_version(number, dirty) VALUES(3, FALSE);');
     } finally {
       db.dispose();
     }
@@ -86,7 +86,7 @@ CREATE TABLE schema_version (
         isA<DatabaseMigrationException>().having(
           (error) => error.toString(),
           'message',
-          contains('newer than supported version 1'),
+          contains('newer than supported version 2'),
         ),
       ),
     );

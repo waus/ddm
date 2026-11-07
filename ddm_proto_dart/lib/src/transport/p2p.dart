@@ -1,4 +1,7 @@
 import 'dart:async';
+import '../proto/sync_state.dart';
+import '../proto/stream.dart';
+import '../proto/_bytes.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -33,7 +36,7 @@ import 'package:ddm_proto_dart/src/proto/sync_source.dart';
 import 'package:ddm_proto_dart/src/sync/constants.dart';
 import 'package:ddm_proto_dart/src/sync/sync.dart';
 import 'package:ddm_proto_dart/src/transport/constants.dart';
-import 'package:ddm_proto_dart/src/transport/errors.dart';
+import 'package:ddm_proto_dart/src/proto/sync_errors.dart';
 import 'package:ddm_proto_dart/src/transport/server.dart';
 import 'package:ddm_proto_dart/src/transport/p2p/identity.dart';
 

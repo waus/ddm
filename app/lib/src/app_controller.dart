@@ -46,13 +46,13 @@ final class AppController extends StateNotifier<AppState> {
       final core = DdmCore.open(
         workspacePath,
         runtimeOptions: _dependencies.runtimeOptions,
+        verifyPow: _verifyPow,
       );
       _core = core;
       _refreshState(core, section: AppSection.accounts);
       final runtime = RuntimeWorker(
         core: core,
         pow: _dependencies.powService,
-        verifyPow: _verifyPow,
         canGenerateNoise: _dependencies.externalPowerCheck,
         onEvent: _onRuntimeEvent,
         log: appDebug,

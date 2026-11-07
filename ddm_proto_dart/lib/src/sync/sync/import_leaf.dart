@@ -1,12 +1,10 @@
 part of '../sync.dart';
 
-Future<void> importLeaf({
+Future<bool> importLeaf({
   required MessageIndexLeaf leaf,
   required SyncSource from,
   required SyncSource to,
-  required int currentUnixSeconds,
-  required ConfigManager configs,
-  required PowProofVerifier verifyPow,
+  required BlobValidator validateBlob,
 }) async {
   final results = await from.getSyncBlobs(<SyncBlobId>[leaf.syncBlobId]);
   if (results.length != 1) {
@@ -16,7 +14,7 @@ Future<void> importLeaf({
   }
   final blob = results.single;
   if (blob == null) {
-    throw FormatException(
+    throw SyncSourceException.unavailable(
       'sync source ${from.id} returned nil sync blob ${leaf.syncBlobId.toHex()}',
     );
   }
@@ -26,13 +24,12 @@ Future<void> importLeaf({
     );
   }
 
-  final configTime = _syncBlobConfigTime(blob.payload);
-  final validated = await parseAndValidateBlob(
-    blobPayload: blob.payload,
-    currentConfig: configs.configAtUnix(configTime),
-    currentUnixSeconds: configTime,
-    verifyPow: verifyPow,
-  );
+  ValidatedBlob validated;
+  try {
+    validated = await validateBlob(blob.payload);
+  } on ExpiredSyncBlob {
+    return false;
+  }
   if (validated.id != leaf.syncBlobId) {
     throw FormatException(
       'validated sync blob id ${validated.id.toHex()} does not match tree leaf ${leaf.syncBlobId.toHex()}',
@@ -43,20 +40,15 @@ Future<void> importLeaf({
       'sync blob ${validated.id.toHex()} ttl mismatch: tree=${leaf.ttl} blob=${validated.encrypted.expiresTime}',
     );
   }
-  await to.push(
-    blob,
-    validationContext: ImportValidationContext(
-      configs: configs,
-      verifyPow: verifyPow,
-    ),
-  );
+  if (to is _ValidatedBlobSink) {
+    await (to as _ValidatedBlobSink)
+        ._storeValidatedBlob(blob, validated.encrypted);
+  } else {
+    await to.push(blob);
+  }
+  return true;
 }
 
-EncryptedMessage encryptedMessageFromPowEnvelope(Uint8List blobPayload) {
-  final envelope = PowEnvelope.fromBytes(blobPayload);
-  return EncryptedMessage.fromBytes(envelope.object);
-}
-
-int _syncBlobConfigTime(Uint8List blobPayload) {
-  return encryptedConfigTimeUnix(parseSyncBlobPayload(blobPayload).encrypted);
+abstract interface class _ValidatedBlobSink {
+  Future<void> _storeValidatedBlob(SyncBlob blob, EncryptedMessage encrypted);
 }

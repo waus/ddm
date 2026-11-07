@@ -1,6 +1,19 @@
 part of '../runtime.dart';
 
-final class RuntimeTransportService {
+final class RuntimeTransportService implements ShardDiscovery {
+  @override
+  Future<List<SyncSource>> findShardPeers(StreamId stream) async {
+    final out = <SyncSource>[];
+    for (final transport in _transports.whereType<ShardDiscovery>()) {
+      try {
+        out.addAll(await transport.findShardPeers(stream));
+      } catch (_) {
+        continue;
+      }
+    }
+    return out;
+  }
+
   RuntimeTransportService({
     required DdmSqliteStorage storage,
     required UtcNow nowUtc,
@@ -34,6 +47,8 @@ final class RuntimeTransportService {
   final List<SyncTransportServer> _servers = <SyncTransportServer>[];
   bool _discoveryServersStarted = false;
   bool _closed = false;
+
+  List<PeerRecord> listStoredPeers() => _storage.peers.listPeers();
 
   List<String> registeredSourceProtocols() {
     return _transports

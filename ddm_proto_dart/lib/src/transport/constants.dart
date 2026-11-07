@@ -124,3 +124,8 @@ Future<List<int>> readLimited(HttpClientResponse response, int maxBytes) async {
   }
   return out;
 }
+
+const rpcMethodGetState = 7;
+const shardDiscoveryNamespace = 'ddm/shard/';
+
+const Duration shardDiscoveryTimeout = Duration(seconds: 60);

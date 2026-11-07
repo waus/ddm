@@ -1,11 +1,471 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ddm_proto_dart/ddm_proto_dart.dart';
 import 'package:test/test.dart';
+import 'package:ddm_proto_dart/src/sync/outgoing_delivery.dart';
 
 void main() {
+  final shardCases =
+      jsonDecode(File('test/fixtures/shard_selection.json').readAsStringSync())
+          as List<dynamic>;
+  for (final raw in shardCases) {
+    final c = raw as Map<String, dynamic>;
+    test('shard fixture ${c['name']}', () async {
+      final now = DateTime.utc(2026, 5, 1);
+      final storage = _openStorage(nowUtc: () => now);
+      addTearDown(storage.close);
+      final accounts = (c['accounts'] as List)
+          .cast<String>()
+          .map(StreamId.parseHex)
+          .toList();
+      final index = BlobIndex(nowUtc: () => now);
+      final blobs = <SyncBlobId, SyncBlob>{};
+      var i = 0;
+      for (final raw in (c['leaves'] as List).cast<String>()) {
+        final f = _buildPowBlob(
+            streamId: StreamId.parseHex(raw),
+            ttl: 3600,
+            expiresTime: _unix(now) + 1800 + i++);
+        index.add(f.id, f.encrypted.expiresTime);
+        blobs[f.id] = f.blob;
+      }
+      final remote = _MemorySyncSource(index: index, blobs: blobs);
+      final policy = ShardPolicy(
+          targetLeaves: c['target'] as int,
+          streams: () => accounts,
+          nowUtc: () => now);
+      await policy.select(remote, await readSyncState(remote),
+          _validator(_configs(storage, now), _unix(now)));
+      expect(policy.coverage.map((p) => p.value).toList(), c['coverage']);
+    });
+  }
+  for (final scenario in [
+    'newer_snapshot',
+    'removed_account',
+    'expired_observation'
+  ]) {
+    test('late shard observation: $scenario', () async {
+      final publicationTime = DateTime.utc(2026, 5, 1);
+      var now = publicationTime;
+      final storage = _openStorage(nowUtc: () => publicationTime);
+      addTearDown(storage.close);
+      var accounts = [const StreamId(0x10000000)];
+      final policy = ShardPolicy(
+          targetLeaves: 1, streams: () => accounts, nowUtc: () => now);
+      final a = _buildPowBlob(
+          streamId: const StreamId(0x10000000),
+          ttl: 3600,
+          expiresTime: _unix(now) + 1800);
+      final b = _buildPowBlob(
+          streamId: const StreamId(0x20000000),
+          ttl: 3600,
+          expiresTime: _unix(now) + 1800);
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      var blocked = false;
+      final remote = _MemorySyncSource(
+          id: 'peer',
+          index: BlobIndex(nowUtc: () => publicationTime)
+            ..add(a.id, a.encrypted.expiresTime)
+            ..add(b.id, b.encrypted.expiresTime),
+          blobs: {a.id: a.blob, b.id: b.blob},
+          beforeNodeLookup: () async {
+            if (!blocked) {
+              blocked = true;
+              entered.complete();
+              await release.future;
+            }
+          });
+      final validate = _validator(
+          _configs(storage, publicationTime), _unix(publicationTime));
+      final pending =
+          policy.select(remote, await readSyncState(remote), validate);
+      await entered.future;
+      if (scenario == 'newer_snapshot') {
+        await policy.select(
+            _MemorySyncSource(
+                id: 'peer', index: BlobIndex(nowUtc: () => publicationTime)),
+            SyncState(root: null, coverage: []),
+            validate);
+      }
+      if (scenario == 'removed_account') {
+        accounts = [const StreamId(0x30000000)];
+      }
+      if (scenario == 'expired_observation') {
+        now = now.add(shardReassessmentInterval);
+      }
+      release.complete();
+      await pending;
+      expect(policy.coverage, [StreamPrefix('')]);
+    });
+  }
+  test('periodic reassessment combines fresh peers and local density',
+      () async {
+    final publicationTime = DateTime.utc(2026, 5, 1);
+    var now = publicationTime;
+    final storage = _openStorage(nowUtc: () => publicationTime);
+    addTearDown(storage.close);
+    final a = _buildPowBlob(
+        streamId: const StreamId(0x10000000),
+        ttl: 3600,
+        expiresTime: _unix(publicationTime) + 1800);
+    final b = _buildPowBlob(
+        streamId: const StreamId(0x20000000),
+        ttl: 3600,
+        expiresTime: _unix(publicationTime) + 1800);
+    final remote = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => publicationTime)
+          ..add(a.id, a.encrypted.expiresTime)
+          ..add(b.id, b.encrypted.expiresTime),
+        blobs: {a.id: a.blob, b.id: b.blob});
+    final dense = await readSyncState(remote);
+    final empty = SyncState(root: null, coverage: []);
+    final validate =
+        _validator(_configs(storage, publicationTime), _unix(publicationTime));
+    final policy = ShardPolicy(
+        targetLeaves: 1,
+        streams: () => [const StreamId(0x10000000)],
+        nowUtc: () => now);
+    await policy.select(remote, empty, validate, local: true);
+    await policy.select(remote, dense, validate);
+    expect(policy.coverage, [StreamPrefix('1')]);
+    now = now.add(const Duration(minutes: 9));
+    await policy.select(remote, dense, validate);
+    await policy.select(remote, empty, validate, local: true);
+    expect(policy.coverage, [StreamPrefix('1')]);
+    now = now.add(const Duration(minutes: 1));
+    await policy.select(remote, empty, validate, local: true);
+    expect(policy.coverage, [StreamPrefix('1')]);
+    now = now.add(shardReassessmentInterval);
+    await policy.select(remote, dense, validate, local: true);
+    expect(policy.coverage, [StreamPrefix('1')]);
+    now = now.add(shardReassessmentInterval);
+    await policy.select(remote, empty, validate, local: true);
+    expect(policy.coverage, [StreamPrefix('')]);
+    await policy.select(remote, dense, validate);
+    expect(policy.coverage, [StreamPrefix('1')]);
+  });
+  test('accounts retain their choices after overlapping coverage disappears',
+      () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+    var streams = [const StreamId(0x10000000), const StreamId(0x20000000)];
+    final a = _buildPowBlob(
+        streamId: streams[0], ttl: 3600, expiresTime: _unix(now) + 1800);
+    final b = _buildPowBlob(
+        streamId: streams[1], ttl: 3600, expiresTime: _unix(now) + 1800);
+    final remote = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => now)
+          ..add(a.id, a.encrypted.expiresTime)
+          ..add(b.id, b.encrypted.expiresTime),
+        blobs: {a.id: a.blob, b.id: b.blob});
+    final policy = ShardPolicy(targetLeaves: 1, streams: () => streams);
+    final validate = _validator(_configs(storage, now), _unix(now));
+    await policy.select(remote, await readSyncState(remote), validate);
+    expect(policy.coverage, [StreamPrefix('1'), StreamPrefix('2')]);
+    streams = [...streams, const StreamId(0x30000000)];
+    await policy.select(remote, SyncState(root: null, coverage: []), validate);
+    expect(policy.coverage, [StreamPrefix('')]);
+    streams = streams.take(2).toList();
+    await policy.select(remote, SyncState(root: null, coverage: []), validate);
+    expect(policy.coverage, [StreamPrefix('1'), StreamPrefix('2')]);
+  });
+  test('split depth preserves every message in a dense stream', () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+    const stream = StreamId(0x12345678);
+    final a = _buildPowBlob(
+        streamId: stream, ttl: 3600, expiresTime: _unix(now) + 1800);
+    final b = _buildPowBlob(
+        streamId: stream, ttl: 3600, expiresTime: _unix(now) + 1801);
+    final index = BlobIndex(nowUtc: () => now)
+      ..add(a.id, a.encrypted.expiresTime)
+      ..add(b.id, b.encrypted.expiresTime);
+    final remote =
+        _MemorySyncSource(index: index, blobs: {a.id: a.blob, b.id: b.blob});
+    final configs = _configs(storage, now);
+    final policy = ShardPolicy(targetLeaves: 1, streams: () => [stream]);
+    final service = SyncService(
+        blobs: storage.syncBlobs,
+        configs: configs,
+        validateBlob: _validator(configs, _unix(now)),
+        nowUtc: () => now,
+        shards: policy);
+    addTearDown(service.close);
+    expect(await service.importFrom(source: remote), 2);
+    expect(policy.coverage.single.value.length, maxSplit);
+    expect(service.totalSyncedMessages, 2);
+  });
+  test('density selection samples its snapshot before narrowing', () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final a = _buildPowBlob(
+        streamId: const StreamId(0x10000000),
+        ttl: 3600,
+        expiresTime: _unix(now) + 3600);
+    final b = _buildPowBlob(
+        streamId: const StreamId(0x20000000),
+        ttl: 3600,
+        expiresTime: _unix(now) + 3600);
+    final index = BlobIndex(nowUtc: () => now)
+      ..add(a.id, a.encrypted.expiresTime)
+      ..add(b.id, b.encrypted.expiresTime);
+    final remote =
+        _MemorySyncSource(index: index, blobs: {a.id: a.blob, b.id: b.blob});
+    final policy = ShardPolicy(
+        targetLeaves: 1, streams: () => [const StreamId(0x10000000)]);
+    var checks = 0;
+    await policy.select(remote, await readSyncState(remote), (payload) {
+      checks++;
+      return validateSyncBlob(
+          payload: payload,
+          configAtUnix: (_) => _testConfigCore(),
+          currentUnixSeconds: _unix(now),
+          verifyPow: _acceptPow);
+    });
+    expect(checks, sourceCheckSampleCount);
+    expect(policy.coverage, [StreamPrefix('1')]);
+    expect(remote.rootLookups, 1);
+  });
+
+  test('outgoing queue persists retries and deduplicates peers', () async {
+    var now = DateTime.utc(2026, 5, 1);
+    final dir = Directory.systemTemp.createTempSync('ddm-outgoing-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/queue.sqlite';
+    var storage = DdmSqliteStorage.open(path, nowUtc: () => now);
+    final fixture = _buildPowBlob(
+        streamId: const StreamId(0x20000000),
+        ttl: 3600,
+        expiresTime: _unix(now) + 3600);
+    storage.syncBlobs.insertSyncBlob(SyncBlobRecord(
+        blobId: fixture.id,
+        blob: fixture.blob.payload,
+        source: syncBlobSourceLocal,
+        expiresAt: fixture.encrypted.expiresTime));
+    final wrong = _MemorySyncSource(
+        id: 'wrong',
+        index: BlobIndex(nowUtc: () => now),
+        coverage: [StreamPrefix('1')]);
+    final existing = _MemorySyncSource(
+        id: 'existing',
+        index: BlobIndex(nowUtc: () => now)
+          ..add(fixture.id, fixture.encrypted.expiresTime),
+        blobs: {fixture.id: fixture.blob});
+    final target =
+        _MemorySyncSource(id: 'target', index: BlobIndex(nowUtc: () => now));
+    final duplicate =
+        _MemorySyncSource(id: 'target', index: BlobIndex(nowUtc: () => now));
+    final discovery = _TestShardDiscovery([wrong, existing, target, duplicate]);
+    await OutgoingDelivery(
+        queue: storage.syncBlobs,
+        blobs: storage.syncBlobs,
+        discovery: discovery,
+        nowUtc: () => now).run();
+    expect(discovery.streams.single.toHex(), '20000000');
+    expect(wrong.pushed, isEmpty);
+    expect(existing.pushed, isEmpty);
+    expect(target.pushed, hasLength(1));
+    expect(duplicate.pushed, isEmpty);
+    expect(storage.syncBlobs.outgoingPeers(fixture.id), ['existing', 'target']);
+    storage.close();
+    storage = DdmSqliteStorage.open(path, nowUtc: () => now);
+    addTearDown(storage.close);
+    expect(storage.syncBlobs.pendingOutgoing(_unix(now), 16, 3), isEmpty);
+    now = now.add(const Duration(seconds: 30));
+    expect(storage.syncBlobs.pendingOutgoing(_unix(now), 16, 3), [fixture.id]);
+    final third =
+        _MemorySyncSource(id: 'third', index: BlobIndex(nowUtc: () => now));
+    await OutgoingDelivery(
+        queue: storage.syncBlobs,
+        blobs: storage.syncBlobs,
+        discovery: _TestShardDiscovery([third]),
+        nowUtc: () => now).run();
+    expect(storage.syncBlobs.pendingOutgoing(_unix(now) + 30, 16, 3), isEmpty);
+    storage.syncBlobs.deleteSyncBlobById(fixture.id);
+    expect(storage.syncBlobs.outgoingPeers(fixture.id), isEmpty);
+  });
+
+  test(
+      'routed coverage filters sync while fixed storage accepts all local blobs',
+      () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+    final fixture = _buildPowBlob(
+        streamId: const StreamId(0x20000000),
+        ttl: 3600,
+        expiresTime: _unix(now) + 3600);
+    storage.syncBlobs.insertSyncBlob(SyncBlobRecord(
+        blobId: fixture.id,
+        blob: fixture.blob.payload,
+        source: syncBlobSourceLocal,
+        expiresAt: fixture.encrypted.expiresTime));
+    final policy = ShardPolicy(
+        targetLeaves: 1, streams: () => [const StreamId(0x10000000)]);
+    final another = _buildPowBlob(
+        streamId: const StreamId(0x30000000),
+        ttl: 3600,
+        expiresTime: _unix(now) + 3600);
+    final dense = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => now)
+          ..add(fixture.id, fixture.encrypted.expiresTime)
+          ..add(another.id, another.encrypted.expiresTime),
+        blobs: {fixture.id: fixture.blob, another.id: another.blob});
+    await policy.select(dense, await readSyncState(dense),
+        _validator(_configs(storage, now), _unix(now)));
+    final configs = _configs(storage, now);
+    final service = SyncService(
+        blobs: storage.syncBlobs,
+        configs: configs,
+        validateBlob: _validator(configs, _unix(now)),
+        nowUtc: () => now,
+        shards: policy);
+    addTearDown(service.close);
+    final routed = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => now),
+        coverage: [StreamPrefix('2')],
+        flags: const SyncSourceFlags(syncSourceFlagSupportTree |
+            syncSourceFlagWritable |
+            syncSourceFlagRouted));
+    await service.importFrom(source: routed);
+    expect(routed.pushed, isEmpty);
+    final fixed = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => now),
+        flags: const SyncSourceFlags(
+            syncSourceFlagSupportTree | syncSourceFlagWritable));
+    await service.importFrom(source: fixed, prefix: '1');
+    expect(fixed.pushed.single.id, fixture.id);
+  });
+
+  test('local source uses a memory store and validates direct pushes',
+      () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final store = _MemoryBlobStore();
+    var checks = 0;
+    final source = LocalSyncSource(
+      blobs: store,
+      configs: () => [],
+      nowUtc: () => now,
+      validateBlob: (payload) {
+        checks++;
+        return validateSyncBlob(
+            payload: payload,
+            configAtUnix: (_) => _testConfigCore(),
+            currentUnixSeconds: _unix(now),
+            verifyPow: _acceptPow);
+      },
+    );
+    addTearDown(source.stop);
+    final fixture = _buildPowBlob(
+        streamId: const StreamId(1), ttl: 60, expiresTime: _unix(now) + 60);
+    final remoteIndex = BlobIndex(nowUtc: () => now)
+      ..add(fixture.id, fixture.encrypted.expiresTime);
+    final remote = _MemorySyncSource(
+        index: remoteIndex, blobs: {fixture.id: fixture.blob});
+    await recursiveSync(
+        prefix: '',
+        node: remoteIndex.latestRoot().node,
+        from: remote,
+        to: source,
+        validateBlob: (payload) {
+          checks++;
+          return validateSyncBlob(
+              payload: payload,
+              configAtUnix: (_) => _testConfigCore(),
+              currentUnixSeconds: _unix(now),
+              verifyPow: _acceptPow);
+        });
+    expect(checks, 1);
+    expect(store.blobs.keys, [fixture.id]);
+    await expectLater(
+        source.push(SyncBlob(id: fixture.id, payload: Uint8List(0))),
+        throwsFormatException);
+    for (final expires in [_unix(now), _unix(now) + 61]) {
+      final invalid = _buildPowBlob(
+          streamId: const StreamId(2), ttl: 60, expiresTime: expires);
+      await expectLater(source.push(invalid.blob), throwsFormatException);
+    }
+    final wrongId = SyncBlobId(Uint8List(syncBlobIdSize));
+    await expectLater(
+        source.push(SyncBlob(id: wrongId, payload: fixture.blob.payload)),
+        throwsFormatException);
+    expect(store.blobs.length, 1);
+  });
+
+  test('validation selects creation config while checking actual time',
+      () async {
+    final fixture =
+        _buildPowBlob(streamId: const StreamId(1), ttl: 60, expiresTime: 200);
+    int? selectedAt;
+    Future<ValidatedBlob> validate(int now) => validateSyncBlob(
+        payload: fixture.blob.payload,
+        configAtUnix: (at) {
+          selectedAt = at;
+          return _testConfigCore();
+        },
+        currentUnixSeconds: now,
+        verifyPow: _acceptPow);
+    await validate(150);
+    expect(selectedAt, 140);
+    await expectLater(validate(200), throwsA(isA<ExpiredSyncBlob>()));
+    await expectLater(validate(139), throwsFormatException);
+  });
+
+  test('traversal rejects changed metadata and distinguishes lost snapshots',
+      () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final id = SyncBlobId.parseHex('10' * syncBlobIdSize);
+    final leaf = MessageIndexNode.leaf(
+        MessageIndexLeaf(syncBlobId: id, ttl: _unix(now) + 60));
+    final children = List<MessageIndexNodeId?>.filled(16, null)
+      ..[1] = leaf.hash();
+    MessageIndexNode root(int count) =>
+        MessageIndexNode.branch(MessageIndexBranch(
+            prefix: '',
+            childrenCount: count,
+            minTtl: _unix(now) + 60,
+            maxTtl: _unix(now) + 60,
+            childrenIds: children));
+    expect(root(1).hash(), root(2).hash());
+    final local = _MemorySyncSource(index: BlobIndex(nowUtc: () => now));
+    for (final lost in [false, true]) {
+      final remote = _FixedTreeSource(
+          root: root(lost ? 1 : 2), nodes: lost ? {} : {leaf.hash(): leaf});
+      await expectLater(
+          recursiveSync(
+              prefix: '',
+              node: remote.root,
+              from: remote,
+              to: local,
+              validateBlob: (_) async =>
+                  throw StateError('must fail before blob validation')),
+          throwsA(isA<SyncSourceException>().having(
+              (e) => e.kind,
+              'kind',
+              lost
+                  ? SyncSourceErrorKind.unavailable
+                  : SyncSourceErrorKind.invalidResponse)));
+    }
+  });
+
+  test('GC expires a root collapsed to a single leaf', () {
+    var now = DateTime.utc(2026, 5, 1);
+    final index = BlobIndex(nowUtc: () => now, rootRetention: Duration.zero);
+    index.add(SyncBlobId.parseHex('10' * syncBlobIdSize), _unix(now) + 1);
+    index.add(SyncBlobId.parseHex('20' * syncBlobIdSize), _unix(now) + 2);
+    now = now.add(const Duration(seconds: 1));
+    index.runGarbageCollection(now);
+    expect(index.totalBlobs, 1);
+    now = now.add(const Duration(seconds: 1));
+    index.runGarbageCollection(now);
+    expect(index.totalBlobs, 0);
+  });
+
   test('BlobIndex adds blobs into compressed nibble tree', () {
     var now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final index = BlobIndex(nowUtc: () => now);
@@ -57,7 +517,6 @@ void main() {
 
     final index = BlobIndex(
       nowUtc: () => now,
-      storage: storage,
       rootRetention: const Duration(seconds: 10),
     );
     index.add(id, _unix(now));
@@ -68,37 +527,33 @@ void main() {
     now = now.add(const Duration(seconds: 12));
     final deleted = index.runGarbageCollection(now);
     expect(deleted, [id]);
-    expect(storage.syncBlobs.getSyncBlobById(id), isNull);
+    expect(storage.syncBlobs.getSyncBlobById(id), isNotNull);
     expect(index.latestRoot().node.branch!.childrenCount, 0);
   });
 
-  test('BlobIndex periodic garbage collection removes expired obsolete blobs',
-      () async {
-    final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
+  test('LocalSyncSource collects unreferenced stored blobs', () {
+    var now = DateTime.utc(2026, 5, 1);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
-
+    final index = BlobIndex(nowUtc: () => now, rootRetention: Duration.zero);
+    final source = LocalSyncSource(
+        blobs: storage.syncBlobs,
+        configs: _configs(storage, now).records,
+        validateBlob: _validator(_configs(storage, now), _unix(now)),
+        nowUtc: () => now,
+        index: index);
+    addTearDown(source.stop);
     final id = SyncBlobId.parseHex('11' * syncBlobIdSize);
-    storage.syncBlobs.insertSyncBlob(
-      SyncBlobRecord(
+    storage.syncBlobs.insertSyncBlob(SyncBlobRecord(
         blobId: id,
-        blob: Uint8List.fromList(<int>[1, 2, 3]),
+        blob: Uint8List(0),
         source: syncBlobSourceLocal,
-        expiresAt: _unix(now),
-      ),
-    );
-
-    final index = BlobIndex(
-      nowUtc: () => now,
-      storage: storage,
-      rootRetention: Duration.zero,
-      garbageCollectionInterval: const Duration(milliseconds: 10),
-    );
-    addTearDown(index.close);
-    index.add(id, _unix(now));
-
-    await _waitUntil(() => storage.syncBlobs.getSyncBlobById(id) == null);
-    expect(index.latestRoot().node.branch!.childrenCount, 0);
+        expiresAt: _unix(now) + 1));
+    index.add(id, _unix(now) + 1);
+    now = now.add(const Duration(seconds: 2));
+    source.collectGarbage();
+    expect(storage.syncBlobs.getSyncBlobById(id), isNull);
+    expect(index.totalBlobs, 0);
   });
 
   test('LocalSyncSource preloads fresh storage rows and serves lookups',
@@ -128,9 +583,10 @@ void main() {
 
     final configs = _configs(storage, now);
     final source = LocalSyncSource(
-      storage: storage,
-      configs: configs,
+      blobs: storage.syncBlobs,
+      configs: configs.records,
       nowUtc: () => now,
+      validateBlob: _validator(configs, _unix(now)),
     );
     expect(source.index.totalBlobs, 1);
     expect(storage.syncBlobs.getSyncBlobById(expiredId), isNull);
@@ -164,12 +620,13 @@ void main() {
     var imported = 0;
     final configs = _configs(storage, now);
     final local = LocalSyncSource(
-      storage: storage,
-      configs: configs,
+      blobs: storage.syncBlobs,
+      configs: configs.records,
       nowUtc: () => now,
-      onImportedBlob: (encrypted, {validationContext}) {
+      onImportedBlob: (encrypted) {
         imported++;
       },
+      validateBlob: _validator(configs, _unix(now)),
     );
 
     final received = await recursiveSync(
@@ -177,9 +634,7 @@ void main() {
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
       to: local,
-      currentUnixSeconds: _unix(now),
-      configs: configs,
-      verifyPow: _acceptPow,
+      validateBlob: _validator(configs, _unix(now), verifyPow: _acceptPow),
     );
 
     expect(received, 1);
@@ -192,9 +647,7 @@ void main() {
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
       to: local,
-      currentUnixSeconds: _unix(now),
-      configs: configs,
-      verifyPow: _acceptPow,
+      validateBlob: _validator(configs, _unix(now), verifyPow: _acceptPow),
     );
     expect(duplicateReceived, 0);
   });
@@ -213,12 +666,13 @@ void main() {
     final configs = _configs(storage, now);
     var imported = 0;
     final local = LocalSyncSource(
-      storage: storage,
-      configs: configs,
+      blobs: storage.syncBlobs,
+      configs: configs.records,
       nowUtc: () => now,
-      onImportedBlob: (encrypted, {validationContext}) {
+      onImportedBlob: (encrypted) {
         imported++;
       },
+      validateBlob: _validator(configs, _unix(now)),
     );
 
     storage.syncBlobs.insertSyncBlob(
@@ -299,12 +753,13 @@ void main() {
     );
     final configs = _configs(storage, now);
     final local = LocalSyncSource(
-      storage: storage,
-      configs: configs,
+      blobs: storage.syncBlobs,
+      configs: configs.records,
       nowUtc: () => now,
-      onImportedBlob: (encrypted, {validationContext}) {
+      onImportedBlob: (encrypted) {
         throw StateError('callback failed');
       },
+      validateBlob: _validator(configs, _unix(now)),
     );
 
     await expectLater(
@@ -313,9 +768,7 @@ void main() {
         node: await remote.getMessageIndexRoot() as MessageIndexNode,
         from: remote,
         to: local,
-        currentUnixSeconds: _unix(now),
-        configs: configs,
-        verifyPow: _acceptPow,
+        validateBlob: _validator(configs, _unix(now), verifyPow: _acceptPow),
       ),
       throwsA(isA<StateError>()),
     );
@@ -344,9 +797,10 @@ void main() {
       ),
     );
     final service = SyncService(
-      storage: storage,
+      blobs: storage.syncBlobs,
       configs: _configs(storage, now),
       nowUtc: () => now,
+      validateBlob: _validator(_configs(storage, now), _unix(now)),
     );
 
     final remoteFixture = _buildPowBlob(
@@ -366,7 +820,6 @@ void main() {
 
     final received = await service.importFrom(
       source: remote,
-      verifyPow: _acceptPow,
     );
 
     expect(received, 1);
@@ -374,14 +827,14 @@ void main() {
     expect(storage.syncBlobs.getSyncBlobById(remoteFixture.id), isNotNull);
   });
 
-  test('SyncService reverse sync limits pushes per writable source', () async {
+  test('SyncService sends all local blobs to fixed storage', () async {
     final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
 
     final localFixtures =
         <({SyncBlobId id, SyncBlob blob, EncryptedMessage encrypted})>[];
-    for (var i = 0; i < reverseSyncPushLimit + 1; i++) {
+    for (var i = 0; i < 6; i++) {
       final fixture = _buildPowBlob(
         streamId: StreamId(0x31000000 + i),
         ttl: 3600,
@@ -398,9 +851,10 @@ void main() {
       localFixtures.add(fixture);
     }
     final service = SyncService(
-      storage: storage,
+      blobs: storage.syncBlobs,
       configs: _configs(storage, now),
       nowUtc: () => now,
+      validateBlob: _validator(_configs(storage, now), _unix(now)),
     );
 
     final remoteFixture = _buildPowBlob(
@@ -420,10 +874,9 @@ void main() {
 
     await service.importFrom(
       source: remote,
-      verifyPow: _acceptPow,
     );
 
-    expect(remote.pushed, hasLength(reverseSyncPushLimit));
+    expect(remote.pushed, hasLength(6));
     expect(remote.pushed.map((blob) => blob.id),
         isNot(contains(remoteFixture.id)));
     final localIds = localFixtures.map((fixture) => fixture.id).toSet();
@@ -450,9 +903,10 @@ void main() {
       ),
     );
     final service = SyncService(
-      storage: storage,
+      blobs: storage.syncBlobs,
       configs: _configs(storage, now),
       nowUtc: () => now,
+      validateBlob: _validator(_configs(storage, now), _unix(now)),
     );
     final remote = _MemorySyncSource(
       index: BlobIndex(nowUtc: () => now),
@@ -464,7 +918,6 @@ void main() {
 
     final received = await service.importFrom(
       source: remote,
-      verifyPow: _acceptPow,
     );
 
     expect(received, 0);
@@ -478,9 +931,10 @@ void main() {
 
     final configs = _configs(storage, now);
     final service = SyncService(
-      storage: storage,
+      blobs: storage.syncBlobs,
       configs: configs,
       nowUtc: () => now,
+      validateBlob: _validator(configs, _unix(now)),
     );
     final remote = _MemorySyncSource(
       index: BlobIndex(nowUtc: () => now),
@@ -490,7 +944,6 @@ void main() {
 
     final received = await service.importFrom(
       source: remote,
-      verifyPow: _acceptPow,
     );
 
     expect(received, 0);
@@ -507,9 +960,8 @@ void main() {
 
     await checkSource(
       source: _MemorySyncSource(index: BlobIndex(nowUtc: () => now)),
-      currentUnixSeconds: _unix(now),
-      configs: _configs(storage, now),
-      verifyPow: _acceptPow,
+      validateBlob:
+          _validator(_configs(storage, now), _unix(now), verifyPow: _acceptPow),
     );
   });
 
@@ -545,9 +997,8 @@ void main() {
           root: root,
           nodes: <MessageIndexNodeId, MessageIndexNode>{leaf.hash(): leaf},
         ),
-        currentUnixSeconds: _unix(now),
-        configs: _configs(storage, now),
-        verifyPow: _acceptPow,
+        validateBlob: _validator(_configs(storage, now), _unix(now),
+            verifyPow: _acceptPow),
       ),
       throwsA(
         isA<SyncSourceException>().having(
@@ -677,29 +1128,19 @@ RegisteredSource _registered(String id, double rating, DateTime lastOnlineAt) {
 
 int _unix(DateTime value) => value.toUtc().millisecondsSinceEpoch ~/ 1000;
 
-Future<void> _waitUntil(
-  bool Function() condition, {
-  Duration timeout = const Duration(seconds: 1),
-}) async {
-  final deadline = DateTime.now().add(timeout);
-  while (DateTime.now().isBefore(deadline)) {
-    if (condition()) {
-      return;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
-  fail('condition was not met within $timeout');
-}
-
-final class _MemorySyncSource implements SyncSource {
+final class _MemorySyncSource
+    implements SyncSource, SyncStateSource, PeerIdentitySource {
   _MemorySyncSource({
     this.id = 'memory',
+    this.beforeNodeLookup,
+    List<StreamPrefix>? coverage,
     this.flags = const SyncSourceFlags(syncSourceFlagSupportTree),
     this.rootIsNull = false,
     List<ConfigRecord> configs = const <ConfigRecord>[],
     required this.index,
     Map<SyncBlobId, SyncBlob>? blobs,
-  })  : configs = List<ConfigRecord>.from(configs),
+  })  : coverage = coverage ?? [StreamPrefix('')],
+        configs = List<ConfigRecord>.from(configs),
         _blobs = blobs ?? <SyncBlobId, SyncBlob>{};
 
   @override
@@ -708,7 +1149,14 @@ final class _MemorySyncSource implements SyncSource {
   @override
   final SyncSourceFlags flags;
 
+  final Future<void> Function()? beforeNodeLookup;
   final bool rootIsNull;
+  List<StreamPrefix> coverage;
+  @override
+  String get peerIdentity => id;
+  @override
+  Future<SyncState> getSyncState() async =>
+      SyncState(root: await getMessageIndexRoot(), coverage: coverage);
 
   final List<ConfigRecord> configs;
   final BlobIndex index;
@@ -723,6 +1171,7 @@ final class _MemorySyncSource implements SyncSource {
 
   @override
   Future<MessageIndexNode?> getMessageIndexNode(MessageIndexNodeId id) async {
+    await beforeNodeLookup?.call();
     return index.node(id);
   }
 
@@ -741,14 +1190,11 @@ final class _MemorySyncSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     pushed.add(blob);
     _blobs[blob.id] = blob;
     index.add(
-        blob.id, encryptedMessageFromPowEnvelope(blob.payload).expiresTime);
+        blob.id, parseSyncBlobPayload(blob.payload).encrypted.expiresTime);
   }
 
   @override
@@ -790,14 +1236,59 @@ final class _FixedTreeSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {}
+  Future<void> push(SyncBlob blob) async {}
 
   @override
   Future<List<String>> discoverPeers() async => const <String>[];
 
   @override
   void stop() {}
+}
+
+BlobValidator _validator(ConfigManager configs, int now,
+    {PowProofVerifier verifyPow = _acceptPow}) {
+  return (payload) => validateSyncBlob(
+      payload: payload,
+      configAtUnix: configs.configAtUnix,
+      currentUnixSeconds: now,
+      verifyPow: verifyPow);
+}
+
+final class _MemoryBlobStore implements SyncBlobStore {
+  final blobs = <SyncBlobId, SyncBlobRecord>{};
+  @override
+  bool insertSyncBlob(SyncBlobRecord blob) {
+    if (blobs.containsKey(blob.blobId)) return false;
+    blobs[blob.blobId] = blob;
+    return true;
+  }
+
+  @override
+  SyncBlobRecord? getSyncBlobById(SyncBlobId id) => blobs[id];
+  @override
+  List<SyncBlobIndexRecord> listSyncBlobIndexRecords() => blobs.values
+      .map((b) => SyncBlobIndexRecord(blobId: b.blobId, expiresAt: b.expiresAt))
+      .toList();
+  @override
+  int deleteExpiredSyncBlobs(int now) {
+    final before = blobs.length;
+    blobs.removeWhere((_, b) => b.expiresAt <= now);
+    return before - blobs.length;
+  }
+
+  @override
+  void deleteSyncBlobById(SyncBlobId id) {
+    blobs.remove(id);
+  }
+}
+
+final class _TestShardDiscovery implements ShardDiscovery {
+  _TestShardDiscovery(this.peers);
+  final List<SyncSource> peers;
+  final streams = <StreamId>[];
+  @override
+  Future<List<SyncSource>> findShardPeers(StreamId stream) async {
+    streams.add(stream);
+    return peers;
+  }
 }

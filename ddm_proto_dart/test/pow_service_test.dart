@@ -8,9 +8,7 @@ import 'package:test/test.dart';
 
 void main() {
   test('VdfPowService solves and verifies fixed-width proofs', () async {
-    const service = VdfPowService(
-      progressInterval: Duration(milliseconds: 1),
-    );
+    const service = VdfPowService();
     final inputHash = _sha256('pow-payload');
     final progress = <PowSolveProgress>[];
 
@@ -43,6 +41,42 @@ void main() {
       pi: result.pi,
     );
     expect(verified, isTrue);
+  });
+
+  test('VdfPowService reports intermediate completed work', () async {
+    const service = VdfPowService();
+    final progress = <PowSolveProgress>[];
+    final inputHash = _sha256('pow-progress');
+    final result = await service.solve(
+      modulus: _testPowModulus(),
+      inputHash: inputHash,
+      difficulty: 8192,
+      onProgress: progress.add,
+    );
+
+    expect(progress.first.completion, 0);
+    expect(progress.last.completion, 1);
+    expect(
+      progress.any((item) => item.completion > 0 && item.completion < 1),
+      isTrue,
+    );
+    for (var i = 1; i < progress.length; i++) {
+      expect(progress[i].completion, inInclusiveRange(0, 1));
+      expect(progress[i].completion,
+          greaterThanOrEqualTo(progress[i - 1].completion));
+      expect(
+          progress[i].elapsed, greaterThanOrEqualTo(progress[i - 1].elapsed));
+    }
+    expect(
+      await service.verify(
+        modulus: _testPowModulus(),
+        inputHash: inputHash,
+        difficulty: 8192,
+        y: result.y,
+        pi: result.pi,
+      ),
+      isTrue,
+    );
   });
 
   test('VdfPowService rejects tampered fixed-width proof', () async {

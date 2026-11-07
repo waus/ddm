@@ -711,11 +711,11 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: "v0.4.4"
-      resolved-ref: "2126f5de517111dae809be1c3b91cd9e1e322b6c"
+      ref: "1fb96f66557e9272c6b3df22851c5f8fb9ecb648"
+      resolved-ref: "1fb96f66557e9272c6b3df22851c5f8fb9ecb648"
       url: "https://github.com/waus/vdf"
     source: git
-    version: "0.4.4"
+    version: "0.5.0"
   vm_service:
     dependency: transitive
     description:

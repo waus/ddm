@@ -1,3 +1,4 @@
+import 'package:ddm_proto_dart/src/proto/sync_blob.dart';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -107,12 +108,9 @@ WHERE blob_id = ? AND expires_at > ?;
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     _requireOpen();
-    final encrypted = encryptedMessageFromPowEnvelope(blob.payload);
+    final encrypted = parseSyncBlobPayload(blob.payload).encrypted;
     final expiresAt = _requireUint32(encrypted.expiresTime, 'expires_at');
     final now = _nowSeconds();
     final leaf = MessageIndexNode.leaf(

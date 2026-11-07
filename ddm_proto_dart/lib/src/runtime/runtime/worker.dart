@@ -26,7 +26,6 @@ final class RuntimeWorker {
   RuntimeWorker({
     required DdmCore core,
     required PowService pow,
-    required PowProofVerifier verifyPow,
     required Future<bool> Function() canGenerateNoise,
     required void Function(RuntimeEvent event) onEvent,
     required void Function(String message) log,
@@ -38,7 +37,6 @@ final class RuntimeWorker {
   })  : _core = core,
         _nowUtc = nowUtc,
         _pow = pow,
-        _verifyPow = verifyPow,
         _canGenerateNoise = canGenerateNoise,
         _onEvent = onEvent,
         _log = log;
@@ -46,7 +44,6 @@ final class RuntimeWorker {
   final DdmCore _core;
   final UtcNow _nowUtc;
   final PowService _pow;
-  final PowProofVerifier _verifyPow;
   final Future<bool> Function() _canGenerateNoise;
   final void Function(RuntimeEvent event) _onEvent;
   final void Function(String message) _log;
@@ -58,6 +55,7 @@ final class RuntimeWorker {
   bool _started = false;
   bool _closed = false;
   bool _syncRunning = false;
+  bool _deliveryRunning = false;
   bool _discoveryRunning = false;
   bool _peerExchangeRunning = false;
   bool _publicationRunning = false;
@@ -96,6 +94,8 @@ final class RuntimeWorker {
 
   Future<void> _startSync() async {
     try {
+      await _core.sync.refreshCoverage();
+      if (_closed) return;
       await _core.transports.restoreRegisteredSources();
       if (_closed) return;
       unawaited(_discover());
@@ -103,6 +103,8 @@ final class RuntimeWorker {
       unawaited(_sync());
       final options = _core.runtimeOptions.transports;
       _periodic(options.backgroundSyncInterval, _sync);
+      unawaited(_deliverOutgoing());
+      _periodic(outgoingRetryInterval, _deliverOutgoing);
       _periodic(options.discoveryInterval, _discover);
       _periodic(options.peerExchangeInterval, _exchangePeers);
     } catch (error) {
@@ -112,16 +114,33 @@ final class RuntimeWorker {
     }
   }
 
+  Future<void> _deliverOutgoing() async {
+    if (_closed || _deliveryRunning) return;
+    _deliveryRunning = true;
+    try {
+      await OutgoingDelivery(
+              queue: _core._storage.syncBlobs,
+              blobs: _core._storage.syncBlobs,
+              discovery: _core.transports,
+              nowUtc: _nowUtc)
+          .run(isCancelled: () => _closed);
+    } catch (error) {
+      if (!_closed) _log('outgoing shard delivery failed error=$error');
+    } finally {
+      _deliveryRunning = false;
+    }
+  }
+
   Future<void> _sync() async {
     if (_closed || _syncRunning) return;
     _syncRunning = true;
     try {
+      await _core.sync.refreshCoverage();
       for (final source in _core.transports.sources.getActive(10)) {
         if (!source.flags.has(syncSourceFlagSupportTree)) continue;
         try {
           final received = await _core.sync.importFrom(
             source: source,
-            verifyPow: _verifyPow,
           );
           if (received > 0) {
             source.increaseRatingConst(ratingGoodBlobReceived * received);

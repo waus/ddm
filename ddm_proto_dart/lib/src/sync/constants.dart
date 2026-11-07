@@ -9,7 +9,6 @@ const double ratingGoodBlobReceived = 0.1;
 const double ratingInvalidBlobReceived = 5.0;
 const double ratingReceivedSomethingStrange = 2.0;
 
-const int reverseSyncPushLimit = 5;
 const int sourceCheckSampleCount = 20;
 
 const Duration blobStorageRootRetention = Duration(minutes: 10);
@@ -17,3 +16,15 @@ const Duration blobStorageGcInterval = Duration(seconds: 5);
 const Duration sourceOnlineWindow = Duration(hours: 1);
 const Duration sourceOfflineStartup = Duration(hours: 1);
 const Duration sourceRetention = Duration(hours: 48);
+
+const int syncSourceFlagRouted = 1 << 4;
+const int targetShardLeaves = 100000;
+const int outgoingReplicaTarget = 3;
+const int outgoingBatchSize = 16;
+const Duration outgoingRetryInterval = Duration(seconds: 30);
+
+// Bounds on the maintained prefix depth in nibbles.
+const int minSplit = 0;
+const int maxSplit = 8;
+
+const Duration shardReassessmentInterval = Duration(minutes: 10);

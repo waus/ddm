@@ -1,3 +1,4 @@
+import '../../proto/sync_state.dart';
 import 'package:ddm_proto_dart/src/proto/config_record.dart';
 import 'package:ddm_proto_dart/src/proto/message_index_node.dart';
 import 'package:ddm_proto_dart/src/proto/sync_source.dart';
@@ -5,7 +6,7 @@ import 'package:ddm_proto_dart/src/storage/peers.dart';
 import 'package:ddm_proto_dart/src/sync/constants.dart';
 import 'package:ddm_proto_dart/src/sync/sync/sync_options.dart';
 
-final class RegisteredSource implements SyncSource {
+final class RegisteredSource implements SyncSource, SyncStateSource {
   RegisteredSource({
     required SyncSource source,
     required DateTime createdAt,
@@ -17,6 +18,13 @@ final class RegisteredSource implements SyncSource {
         lastOnlineAt = lastOnlineAt?.toUtc(),
         lastSavedAt = lastSavedAt?.toUtc(),
         rating = rating.isNaN ? ratingDefault : rating;
+
+  @override
+  Future<SyncState> getSyncState() async {
+    final state = await readSyncState(_source);
+    markOnline(DateTime.now());
+    return state;
+  }
 
   final SyncSource _source;
   final DateTime createdAt;
@@ -111,11 +119,7 @@ final class RegisteredSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) =>
-      _source.push(blob, validationContext: validationContext);
+  Future<void> push(SyncBlob blob) => _source.push(blob);
 
   @override
   Future<List<String>> discoverPeers() => _source.discoverPeers();

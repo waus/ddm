@@ -17,6 +17,29 @@ typedef PowProofVerifier = FutureOr<bool> Function({
   required Uint8List pi,
 });
 
+final class ExpiredSyncBlob extends FormatException {
+  const ExpiredSyncBlob() : super('sync blob is expired');
+}
+
+typedef ValidatedBlob = ({SyncBlobId id, EncryptedMessage encrypted});
+typedef BlobValidator = Future<ValidatedBlob> Function(Uint8List payload);
+
+Future<ValidatedBlob> validateSyncBlob({
+  required Uint8List payload,
+  required ConfigV1Core Function(int) configAtUnix,
+  required int currentUnixSeconds,
+  required PowProofVerifier verifyPow,
+}) async {
+  final parsed = parseSyncBlobPayload(payload);
+  return _validateParsedBlob(
+    blobPayload: payload,
+    parsed: parsed,
+    currentConfig: configAtUnix(encryptedConfigTimeUnix(parsed.encrypted)),
+    currentUnixSeconds: currentUnixSeconds,
+    verifyPow: verifyPow,
+  );
+}
+
 SyncBlobId deriveSyncBlobId({
   required StreamId streamId,
   required Uint8List blobPayload,
@@ -35,17 +58,26 @@ Future<({SyncBlobId id, EncryptedMessage encrypted})> parseAndValidateBlob({
   required int currentUnixSeconds,
   required PowProofVerifier verifyPow,
 }) async {
-  if (blobPayload.length > maxPowEnvelopeBytes) {
-    throw FormatException(
-      'pow envelope exceeds limit: got ${blobPayload.length} bytes, max $maxPowEnvelopeBytes',
-    );
-  }
+  return _validateParsedBlob(
+    blobPayload: blobPayload,
+    parsed: parseSyncBlobPayload(blobPayload),
+    currentConfig: currentConfig,
+    currentUnixSeconds: currentUnixSeconds,
+    verifyPow: verifyPow,
+  );
+}
 
-  final parsed = parseSyncBlobPayload(blobPayload);
+Future<ValidatedBlob> _validateParsedBlob({
+  required Uint8List blobPayload,
+  required ({PowEnvelope envelope, EncryptedMessage encrypted}) parsed,
+  required ConfigV1Core currentConfig,
+  required int currentUnixSeconds,
+  required PowProofVerifier verifyPow,
+}) async {
   final envelope = parsed.envelope;
   final encrypted = parsed.encrypted;
-  if (encrypted.expiresTime < currentUnixSeconds) {
-    throw const FormatException('encrypted messages is expired');
+  if (encrypted.expiresTime <= currentUnixSeconds) {
+    throw const ExpiredSyncBlob();
   }
   final maxExpiresAt = currentUnixSeconds + encrypted.ttl;
   if (encrypted.expiresTime > maxExpiresAt) {

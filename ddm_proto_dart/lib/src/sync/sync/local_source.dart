@@ -1,26 +1,36 @@
 part of '../sync.dart';
 
-final class LocalSyncSource implements SyncSource {
+final class LocalSyncSource
+    implements SyncSource, SyncStateSource, _ValidatedBlobSink {
   LocalSyncSource({
-    required DdmSqliteStorage storage,
-    required ConfigManager configs,
+    required SyncBlobStore blobs,
+    required List<ConfigRecord> Function() configs,
+    required BlobValidator validateBlob,
     required UtcNow nowUtc,
     BlobIndex? index,
+    ShardPolicy? shards,
     ImportedEncryptedHandler? onImportedBlob,
-  })  : _storage = storage,
+  })  : shards = shards ?? ShardPolicy(nowUtc: nowUtc),
+        _blobs = blobs,
+        _validateBlob = validateBlob,
         _configs = configs,
         _nowUtc = nowUtc,
         _onImportedBlob = onImportedBlob,
-        index =
-            index ?? BlobIndex.fromStorage(storage: storage, nowUtc: nowUtc),
-        _ownsIndex = index == null;
+        index = index ?? loadBlobIndex(blobs: blobs, nowUtc: nowUtc) {
+    _gcTimer = Timer.periodic(blobStorageGcInterval, (_) => collectGarbage());
+  }
 
-  final DdmSqliteStorage _storage;
-  final ConfigManager _configs;
+  final ShardPolicy shards;
+  @override
+  Future<SyncState> getSyncState() async =>
+      SyncState(root: index.latestRoot().node, coverage: shards.coverage);
+  final SyncBlobStore _blobs;
+  final BlobValidator _validateBlob;
+  late final Timer _gcTimer;
+  final List<ConfigRecord> Function() _configs;
   final UtcNow _nowUtc;
   final ImportedEncryptedHandler? _onImportedBlob;
   final BlobIndex index;
-  final bool _ownsIndex;
 
   @override
   String get id => 'local';
@@ -32,7 +42,7 @@ final class LocalSyncSource implements SyncSource {
 
   @override
   Future<List<ConfigRecord>> getConfigs() async {
-    return _configs.records();
+    return _configs();
   }
 
   @override
@@ -47,11 +57,10 @@ final class LocalSyncSource implements SyncSource {
 
   @override
   Future<List<SyncBlob?>> getSyncBlobs(List<SyncBlobId> ids) async {
-    final now = syncUnixSeconds(_nowUtc());
     final out = <SyncBlob?>[];
     for (final id in ids) {
-      final blob = _storage.syncBlobs.getSyncBlobById(id);
-      if (blob == null || blob.expiresAt <= now) {
+      final blob = _blobs.getSyncBlobById(id);
+      if (blob == null) {
         out.add(null);
         continue;
       }
@@ -61,15 +70,18 @@ final class LocalSyncSource implements SyncSource {
   }
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
-    final encrypted = encryptedMessageFromPowEnvelope(blob.payload);
-    await _onImportedBlob?.call(
-      encrypted,
-      validationContext: validationContext,
-    );
+  Future<void> push(SyncBlob blob) async {
+    final validated = await _validateBlob(blob.payload);
+    if (validated.id != blob.id) {
+      throw const FormatException('sync blob ID does not match payload');
+    }
+    await _storeValidatedBlob(blob, validated.encrypted);
+  }
+
+  @override
+  Future<void> _storeValidatedBlob(
+      SyncBlob blob, EncryptedMessage encrypted) async {
+    await _onImportedBlob?.call(encrypted);
 
     final record = SyncBlobRecord(
       blobId: blob.id,
@@ -77,7 +89,7 @@ final class LocalSyncSource implements SyncSource {
       source: syncBlobSourceImported,
       expiresAt: encrypted.expiresTime,
     );
-    final inserted = _storage.syncBlobs.insertSyncBlob(record);
+    final inserted = _blobs.insertSyncBlob(record);
     if (!inserted) {
       return;
     }
@@ -87,10 +99,27 @@ final class LocalSyncSource implements SyncSource {
   @override
   Future<List<String>> discoverPeers() async => const <String>[];
 
-  @override
-  void stop() {
-    if (_ownsIndex) {
-      index.close();
+  void collectGarbage() {
+    for (final id in index.runGarbageCollection(_nowUtc())) {
+      _blobs.deleteSyncBlobById(id);
     }
   }
+
+  @override
+  void stop() {
+    _gcTimer.cancel();
+  }
+}
+
+BlobIndex loadBlobIndex(
+    {required SyncBlobStore blobs, required UtcNow nowUtc}) {
+  final now = syncUnixSeconds(nowUtc());
+  blobs.deleteExpiredSyncBlobs(now);
+  return BlobIndex(
+      nowUtc: nowUtc,
+      preload: blobs
+          .listSyncBlobIndexRecords()
+          .where((record) => record.expiresAt > now)
+          .map((record) => BlobIndexInitRecord(
+              syncBlobId: record.blobId, expiresAt: record.expiresAt)));
 }

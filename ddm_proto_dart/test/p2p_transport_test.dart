@@ -210,6 +210,8 @@ void main() {
     expect(configs, hasLength(1));
     expect(configRecordPayload(configs.single), <int>[7, 8, 9]);
 
+    final state = await readSyncState(peer);
+    expect(state.coverage, [StreamPrefix('')]);
     final root = await peer.getMessageIndexRoot();
     expect(root, isNotNull);
     expect(root!.hash(), sourceB.root!.hash());
@@ -294,10 +296,7 @@ final class _EmptySyncSource implements SyncSource {
       List<SyncBlob?>.filled(ids.length, null);
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {}
+  Future<void> push(SyncBlob blob) async {}
 
   @override
   Future<List<String>> discoverPeers() async => const <String>[];
@@ -355,10 +354,7 @@ final class _MemorySyncSource implements SyncSource {
       ids.map((id) => blobs[id]).toList(growable: false);
 
   @override
-  Future<void> push(
-    SyncBlob blob, {
-    ImportValidationContext? validationContext,
-  }) async {
+  Future<void> push(SyncBlob blob) async {
     pushed.add(blob);
   }
 

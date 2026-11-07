@@ -10,7 +10,7 @@ reconciliation, shard coverage, and verification requirements.
 
 A source is any object that can provide:
 
-1. the current and future config timeline;
+1. the retained config timeline;
 2. messages by ID, where "message" means the encrypted transferable object
    called a sync blob;
 3. enough index metadata for a client to decide what to synchronize next.
@@ -20,27 +20,34 @@ file, removable media, or another transport-specific object store.
 
 ## Required Source Operations
 
-The source contract has five operations:
+The source contract exposes these operations:
 
 ```
 GetConfigs() []ConfigRecord
 GetSyncBlobs(ids []SyncBlobID) []SyncBlob
 GetMessageIndexRoot() MessageIndexNode
 GetMessageIndexNode(id MessageIndexNodeID) MessageIndexNode
-PushMessage(m MessageIndexNode)
+Push(blob SyncBlob)
+GetSyncState() { root MessageIndexNode?, coverage []StreamPrefix }
 
 ```
 
 Semantics:
 
-1. `GetConfigs` returns the full config timeline that is active now or
-   may become active in the future, ordered by ascending `seqno`.
+1. `GetConfigs` returns retained historical, active, and future config records,
+   ordered by ascending `seqno`. Historical records validate live publications
+   generated under earlier configurations.
 2. `GetSyncBlobs` returns blobs for a batch of blob IDs, preserving request
    order, duplicate requests, and explicit misses.
 3. `GetMessageIndexRoot` returns the current message-index tree root.
 4. `GetMessageIndexNode` returns one message-index node by explicit structural
    node ID.
-5. `PushMessage` sends message to source
+5. `Push` transfers a blob. The sender validates blobs before export; receiving
+   nodes validate blobs before insertion. Fixed-store adapters persist validated
+   exports.
+6. `GetSyncState` returns a root snapshot and maintained ranges. An empty
+   coverage list serves no range; the prefix `""` covers every stream. A covered
+   range without leaves is empty. Missing snapshot nodes are unavailable.
 
 Returned config remains untrusted until signature and metadata validation
 succeeds.
@@ -118,3 +125,19 @@ Transport-specific documents define:
 
 The shared requirement is only the source model and the
 operations above.
+
+## Coverage and Routing Wire Format
+
+HTTP `GET /state` returns `{"root": <node or null>, "coverage": [<prefix>, ...]}`.
+P2P RPC method `7` returns the same state in the `Node` and `Coverage` fields.
+The CBOR response tuple is `[Status, Error, Peers, Configs, Blobs, Node, Coverage]`;
+unused fields are null. Coverage contains at most 256 lowercase hexadecimal
+prefixes of up to eight nibbles. Normalize duplicate and nested ranges before
+computing intersections.
+
+P2P providers advertise every maintained prefix using namespace
+`hex(SHA256(UTF8("ddm/shard/" + prefix)))`. Its provider key is a CIDv1 raw block
+with SHA-256 of the UTF-8 namespace. Lookup queries every ancestor prefix of
+the destination stream, including `""` and the full eight-nibble stream. A
+fresh state response determines whether a discovered peer still serves that
+stream; provider records can outlive coverage changes.

@@ -8,7 +8,16 @@ void main() {
   test('AccountPolicyView parses silent state from address policy', () async {
     final workspace = Directory.systemTemp.createTempSync('ddm-policy-test-');
     addTearDown(() => workspace.deleteSync(recursive: true));
-    final core = DdmCore.open(workspace.path);
+    final core = DdmCore.open(
+      workspace.path,
+      verifyPow: (
+              {required modulus,
+              required input,
+              required difficulty,
+              required y,
+              required pi}) =>
+          true,
+    );
     addTearDown(core.close);
 
     final defaultAccount = await core.accounts.createAccount(
