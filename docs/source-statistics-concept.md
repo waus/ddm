@@ -19,16 +19,15 @@ file, removable media, or another transport-specific object store.
 
 ## Required Source Operations
 
-The baseline source contract matches the Go `proto.Source` interface and has
-four operations:
+The baseline source contract has five operations:
 
-```go
-type Source interface {
-    GetConfigs(ctx context.Context) ([]ConfigRecord, error)
-    GetSyncBlobs(ctx context.Context, ids []SyncBlobID) ([]*SyncBlob, error)
-    GetMessageIndexRoot(ctx context.Context) (*MessageIndexNode, error)
-    GetMessageIndexNode(ctx context.Context, id MessageIndexNodeID) (*MessageIndexNode, error)
-}
+```
+GetConfigs() []ConfigRecord
+GetSyncBlobs(ids []SyncBlobID) []SyncBlob
+GetMessageIndexRoot() MessageIndexNode
+GetMessageIndexNode(id MessageIndexNodeID) MessageIndexNode
+PushMessage(m MessageIndexNode)
+
 ```
 
 Semantics:
@@ -40,6 +39,7 @@ Semantics:
 3. `GetMessageIndexRoot` returns the current message-index tree root.
 4. `GetMessageIndexNode` returns one message-index node by explicit structural
    node ID.
+5. `PushMessage` sends message to source
 
 Returned config remains untrusted until signature and metadata validation
 succeeds.
