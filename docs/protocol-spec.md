@@ -4,22 +4,8 @@ Status: Working specification
 
 ## 1. Scope
 
-This document defines the current target protocol model for DDM (Doomsday
-Messenger).
-
-It captures the current design direction from `brainstorm.md`, aligns it with
-repository-level architectural constraints, and defines the intended wire
-format baseline for future implementation work.
-
-This is not yet a frozen standard. Sections marked as open questions identify
-areas that still require explicit design decisions before the protocol can be
-treated as stable.
-
-Important implementation note: the current repository still contains
-transitional `BCS`-based and raw-signature code paths. This document is the
-normative target format going forward: shared object serialization is
-`deterministic CBOR`, signatures use `COSE_Sign1`, and type definitions in the
-documentation use `CDDL`.
+This document defines the DDM (Doomsday Messenger) protocol. Shared objects use
+deterministic CBOR, signatures use `COSE_Sign1`, and type definitions use CDDL.
 
 ## 2. Design Goals
 
@@ -49,7 +35,7 @@ the object to a stream, and publishes it through any available transport.
 Recipients obtain objects by synchronizing the stream ranges they currently
 choose to consume.
 
-The baseline protocol assumes that:
+The protocol assumes that:
 
 1. message publication is asynchronous;
 2. delivery confirmation may be delayed or absent;
@@ -58,16 +44,15 @@ The baseline protocol assumes that:
 
 ### 3.2 Encryption and Identity
 
-The current design uses two distinct cryptographic roles:
+The protocol uses two distinct cryptographic roles:
 
 1. `Ed25519` for identity and signatures;
 2. `X25519` for key exchange and encrypted payload delivery.
 
-The product direction also states that a user address is based on an
-`Ed25519` public key. Therefore, the protocol SHOULD treat identity and payload
-encryption as separate but linked concerns.
+A user address is based on an `Ed25519` public key. Identity and payload
+encryption use linked key material.
 
-At this stage, the specification assumes:
+Key and signature rules:
 
 1. every account has a stable signing identity;
 2. recipient-side `X25519` key material is deterministically derived from the
@@ -85,23 +70,18 @@ after that recipient type is finalized in `age`.
 
 An address is a versioned binary structure.
 
-The current agreed direction is:
+Address structure:
 
 1. the address is serialized with deterministic `CBOR`;
-2. in version `176`, the core identity material is the `Ed25519` public key
-   encoded in 32 bytes;
+2. the identity material is an `Ed25519` public key encoded in 32 bytes;
 3. the address structure also carries an address-level policy byte that
    indicates whether ACK-based retry behavior is expected.
 
-This means the address is not just a naked public key value. It is a protocol
-object with a stable binary schema and address-level behavior bits.
-
 For human-facing representation, DDM uses lowercase
 `base32` encoding without padding over a compact display-only byte layout.
-There is no textual prefix. This display layout is not the protocol CBOR
-address serialization.
+The display layout has no textual prefix and uses the byte layout below.
 
-The current `CDDL` definition is:
+The CDDL definition is:
 
 ```cddl
 u8 = 0..255
@@ -115,8 +95,7 @@ address-v1 = [
 ]
 ```
 
-The current assumption is that `address-policy` is a single byte. Only
-one capability is currently defined:
+`address-policy` is a single byte with one defined capability:
 
 1. `ack-expected`: if set, senders MAY use ACK-based retry logic for this
    address.
@@ -124,8 +103,7 @@ one capability is currently defined:
 All other bits are reserved for future use and MUST be zero in newly generated
 version `176` addresses unless and until the specification defines them.
 
-Because `X25519` recipient material is derived from `Ed25519`, the version `176`
-address does not need to carry a separate `X25519` public key.
+`X25519` recipient material is derived from the address's `Ed25519` public key.
 
 The display-only address byte layout is:
 
@@ -179,7 +157,7 @@ config-record-v1-payload = [
   pow-modulus: bstr .size 128
 ]
 
-; Draft. Not implemented by current clients.
+; Proposed config extension.
 config-record-v2 = [
   version: 2,
   signed-payload: cose-sign1
@@ -212,17 +190,17 @@ Record version `1` payload contains:
 4. `pow_scale_divisor: u64`;
 5. `pow_modulus: bstr .size 128`.
 
-The `COSE_Sign1` profile for the current protocol is:
+The `COSE_Sign1` profile is:
 
 1. the protected header MUST contain `alg = EdDSA` (`1: -8`);
-2. the payload MUST be embedded, not detached;
+2. the payload MUST be embedded;
 3. the unprotected header SHOULD be empty unless a later profile adds specific
    fields;
 4. the verification key is a developer-controlled hardcoded admin public key.
 
 ### 4.2 Record Version 2 Draft
 
-Record version `2` is a draft and is not implemented by current clients.
+Record version `2` is a proposed config extension.
 
 Record version `2` payload contains all record version `1` fields, plus:
 
@@ -238,13 +216,18 @@ blobs.
 
 ### 4.3 Activation Rules
 
-Config records represent full snapshots, not patches. A source may return more
+Config records represent full snapshots. A source may return more
 than one record. At evaluation time `t`, the active record is selected as:
 
 1. records with `active_from_unix <= t`;
 2. the record with the largest `seqno` among them.
 
 If no record is active yet, clients use a built-in signed default record.
+
+A config's effective period lasts while this selection rule chooses it, ending
+when a higher-sequence record becomes active. For message PoW, evaluate the rule
+at the publication's generation time. Receivers MUST
+retain the signed config history needed to validate unexpired publications.
 
 ### 4.4 Decentralized Distribution
 
@@ -265,8 +248,8 @@ record and MUST present a persistent upgrade prompt to the user.
 
 ### 5.1 Purpose
 
-DDM does not assume that every participant can ingest all network traffic.
-Instead, message distribution is partitioned into streams.
+Message distribution is partitioned into streams so participants can select
+traffic within their resource budgets.
 
 ### 5.2 Stream Assignment
 
@@ -274,9 +257,9 @@ Each message belongs to exactly one stream.
 
 The stream is derived from a prefix of a hash of the full address structure.
 This means stream selection is based on the serialized address object, including
-its versioned format, rather than on a standalone raw public key.
+its version and policy.
 
-The current design direction is:
+Stream derivation:
 
 1. stream ID = first 32 bits of `SHA-256(serialized-address)`;
 2. stream derivation includes the full serialized address bytes, including
@@ -307,9 +290,9 @@ A client MAY synchronize:
 Proof of work is used to raise the cost of unsolicited bulk traffic and reduce
 network abuse.
 
-### 6.2 Current Direction
+### 6.2 Algorithm
 
-The current protocol uses a Wesolowski RSA-group VDF.
+The protocol uses a Wesolowski RSA-group VDF.
 
 The protocol MUST support algorithm agility:
 
@@ -317,12 +300,12 @@ The protocol MUST support algorithm agility:
 2. difficulty parameters MUST be globally publishable;
 3. nodes MUST be able to reject obsolete or unknown proof-of-work regimes.
 
-In version 1, the active algorithm is `VDF RSA` (algorithm id `1`), and the
+The algorithm is `VDF RSA` (algorithm id `1`), and the
 network-wide RSA modulus is distributed in signed global config as
 `pow_modulus` (exactly 128 bytes).
 
 Unless explicitly overridden by a later revision, all hash references in this
-draft use `SHA-256`, including:
+specification use `SHA-256`, including:
 
 1. stream selection from serialized addresses;
 2. object-hash references where the object model requires a fixed 32-byte hash.
@@ -332,7 +315,7 @@ Proof of work is bound to `SHA-256` of canonical serialized
 
 ### 6.3 Effective Difficulty Model
 
-The current protocol defines an effective difficulty model for message
+The protocol defines an effective difficulty model for message
 publication:
 
 1. the globally distributed value is a base proof-of-work target;
@@ -395,14 +378,14 @@ pow-envelope-v1 = [
 Field interpretation:
 
 1. `version` identifies the proof-of-work envelope format version;
-2. `algorithm` identifies the proof-of-work algorithm; the current protocol
+2. `algorithm` identifies the proof-of-work algorithm; the protocol
    uses RSA VDF;
 3. `y` is the VDF output value, left-padded with zeros to 128 bytes;
 4. `pi` is the VDF proof value, left-padded with zeros to 128 bytes;
 5. `object` is the canonical serialized `EncryptedMessage` bytes.
 
 The shared object that propagates through streams is `pow-envelope-v1`. The
-inner `encrypted-message-v1` remains the transport-independent object bound by
+inner `encrypted-message-v1` is the transport-independent object bound by
 proof of work and consumed by higher protocol layers after proof verification
 succeeds.
 
@@ -413,11 +396,12 @@ Proof of work is validated as follows:
 1. decode `pow-envelope-v1`;
 2. require `algorithm = 1` (`VDF RSA`);
 3. require `object` to decode as a valid `encrypted-message-v1`;
-4. recompute the required difficulty from the configured `base_difficulty`,
+4. select the config effective at `generated_time = expires_time - ttl` and
+   recompute the required difficulty from that config's `base_difficulty`,
    configured `scale_divisor`, decoded `ttl`, and serialized
    `encrypted-message-v1` length;
 5. compute `pow_input = sha256(deterministic-cbor(encrypted-message-v1))`;
-6. verify the VDF proof using `pow_modulus`, `pow_input`, `difficulty`, `y`,
+6. verify the VDF proof using that config's `pow_modulus`, `pow_input`, `difficulty`, `y`,
    and `pi`;
 7. accept the envelope only if VDF verification succeeds.
 
@@ -438,8 +422,7 @@ The following serialization rules are normative:
 4. when one object embeds another serialized object, the field is carried as a
    `bstr` containing the embedded object's deterministic `CBOR` bytes;
 5. `COSE_Sign1` objects in DDM MUST use tag `18` and MUST carry an embedded
-   payload rather than a detached payload unless a later profile states
-   otherwise;
+   payload;
 6. the canonical bytes are the bytes hashed for stream assignment and proof of
    work, and the bytes carried when one object embeds another serialized
    object.
@@ -491,7 +474,7 @@ config-record-v1-payload = [
   pow-modulus: bstr .size 128
 ]
 
-; Draft. Not implemented by current clients.
+; Proposed config extension.
 config-record-v2-payload = [
   seqno: u64,
   active-from-unix: i64,
@@ -545,6 +528,14 @@ Field interpretation for `encrypted-message-v1`:
 5. `payload` is a binary `age` message for one recipient, addressed to the
    recipient-side `X25519` material derived from the destination address.
 
+The publication generation time is represented implicitly as
+`generated_time = expires_time - ttl`; no additional wire field is needed.
+Senders MUST set `expires_time = generated_time + ttl` without overflow.
+Receivers MUST reject underflow and generation times later than their current
+Unix time. Clocks are assumed accurate; no clock-skew allowance applies.
+Both fields are bound by PoW. The generation time belongs to the outer
+publication; each retry sets its own publication time.
+
 ### 7.2 Decrypted Message Payload
 
 Field interpretation for `unencrypted-message-v1` and `message-body-v1`:
@@ -566,7 +557,7 @@ Field interpretation for `unencrypted-message-v1` and `message-body-v1`:
 The `COSE_Sign1` profile for `signed_body` is:
 
 1. the protected header MUST contain `alg = EdDSA` (`1: -8`);
-2. the payload MUST be embedded, not detached;
+2. the payload MUST be embedded;
 3. the sender verification key is `message-body-v1.sender.ed25519-pubkey`;
 4. unprotected headers SHOULD be empty unless a later profile adds specific
    fields.
@@ -577,10 +568,8 @@ Payload size limit:
 2. senders MUST reject payloads above this limit;
 3. receivers MAY reject oversized payloads during validation.
 
-The current implementation-facing interpretation is that `signed_body` covers
-the logical inner message object. Outer transport fields such as object
-expiration time or stream number remain part of the enclosing
-`encrypted-message-v1` rather than the signed inner payload.
+`signed_body` covers the logical inner message object. The enclosing
+`encrypted-message-v1` carries the expiration time and stream number.
 
 `message_id` is a UUID version 4 value encoded as 16 raw bytes in protocol
 objects. Textual UUID rendering is for debugging and user interfaces only.
@@ -605,9 +594,9 @@ messages at the shared-object level.
 
 ## 8. Message Types
 
-The initial content plan supports multiple logical message types.
+The protocol supports multiple logical message types.
 
-The current enum is:
+The message type enum is:
 
 ```cddl
 message-type = 0 / 1 / 2 / 3
@@ -620,7 +609,7 @@ Interpretation:
 3. `2`: `Binary`, extended encoding for richer message formats;
 4. `3`: `Ack`, `uuid-bytes` of the acknowledged message ID.
 
-The first structured UTF-8 format is markdown-based and uses a single required
+The structured UTF-8 format is markdown-based and uses a single required
 subject header at the start of the document:
 
 ```text
@@ -644,7 +633,7 @@ payloads such as attachments and media.
 
 The second delivery signal is an explicit acknowledgment path.
 
-Current intended model:
+ACK flow:
 
 1. the sender precomputes a complete encrypted ACK message addressed back to
    the sender;
@@ -666,7 +655,7 @@ match `acked_message_id` but come from any other sender identity.
 
 ### 9.2 Address-Level ACK Policy
 
-The current design direction defines ACK behavior as an address property.
+ACK behavior is an address property.
 
 Examples:
 
@@ -675,7 +664,7 @@ Examples:
 3. a single device MAY derive multiple addresses from the same root key
    material, with different privacy and acknowledgment policies.
 
-In version `176` addresses, `ack-expected` is encoded as bit 0 of the policy
+`ack-expected` is encoded as bit 0 of the address policy
 byte. Bits 1 through 7 are reserved and MUST be zero.
 
 ### 9.3 Retries
@@ -687,8 +676,7 @@ The protocol only defines the conditions under which retries are relevant:
 3. the message has not exceeded local retry limits.
 
 The default retry schedule, TTL growth policy, and proof-of-work escalation
-policy are client-behavior defaults, not wire-level protocol rules. The current
-recommended default profile is defined in `docs/client-behavior.md`.
+policy are defined by client behavior. The recommended default profile is defined in `docs/client-behavior.md`.
 
 For wire-level identity, a retry is a republished copy of the same logical
 message. A sender retrying a message:
@@ -706,8 +694,7 @@ DDM distinguishes between transport-level replay and logical-message replay.
 Transport-level replay means the same serialized `encrypted-message-v1` bytes
 are republished through one or more transports. This is allowed. Nodes MAY
 dedupe such objects locally by the canonical serialized `encrypted-message-v1`
-bytes or by their hash, but identical republishing is not a protocol
-violation.
+bytes or by their hash.
 
 Logical-message replay is handled after decryption:
 
@@ -720,8 +707,7 @@ Logical-message replay is handled after decryption:
    be treated as a conflicting replay and MUST NOT be surfaced as a new
    message;
 4. a recipient MUST NOT emit more than one ACK for the same logical message;
-5. `message_id` uniqueness is scoped to the sender identity, not globally
-   across the network.
+5. `message_id` uniqueness is scoped to the sender identity.
 
 ACKs use a separate deduplication rule:
 
@@ -735,8 +721,7 @@ ACKs use a separate deduplication rule:
 
 ### 10.1 Cover Traffic
 
-The protocol allows cover traffic but does not require a fixed network-wide
-cover-traffic rate.
+Cover traffic is optional; clients choose their own rate.
 
 Ordinary nodes MAY generate messages to invalid or unknown addresses in order
 to create background network noise and reduce traffic analysis accuracy.
@@ -761,8 +746,7 @@ interest and observed network requests.
 
 Clients need a way to estimate stream load before deciding what to synchronize.
 
-DDM does not define a single protocol-wide wire format for source statistics.
-Instead, sync-range selection is based on:
+Sync-range selection is based on:
 
 1. local node policy;
 2. statistics advertised or readable from one or more message sources;
@@ -777,9 +761,10 @@ information for a client to choose what to synchronize without ingesting the
 entire source first. The conceptual source model is documented in
 `docs/source-statistics-concept.md`.
 
-Concrete request and response formats, snapshot handling, and verification
-procedures belong in transport-specific or format-specific sub-documents rather
-than in the main protocol specification.
+The [Global Message Tree](message-tree.md) document describes the shared Merkle
+tree model, snapshots, garbage collection, shard overlap, and verification.
+Concrete request and response encodings belong in transport-specific or
+format-specific sub-documents.
 
 ## 12. Transport Independence
 
@@ -796,24 +781,14 @@ Expected transport classes include:
 A transport MAY optimize discovery, batching, or replication, but it MUST NOT
 change the logical message, stream, proof-of-work, or acknowledgment semantics.
 
-## 13. Current Non-Goals
+## 13. Scope Boundaries
 
 The following items are intentionally not fixed in this specification:
 
 1. exact attachment format;
 2. future perfect forward secrecy strategy.
 
-## 14. Remaining Open Questions
+## 14. Tree Transport Contract
 
-No additional protocol-level open questions are currently tracked in this
-document.
-
-## 15. Next Specification Steps
-
-The recommended next steps are:
-
-1. migrate the Go and Dart implementations from transitional `BCS` encoders to
-   deterministic `CBOR`;
-2. replace raw signature handling with `COSE_Sign1` verification and emission;
-3. define attachment formats;
-4. define future perfect forward secrecy strategy.
+Coverage exchange requirements are defined in
+[Global Message Tree](message-tree.md#transport-contract).

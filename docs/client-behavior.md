@@ -1,7 +1,6 @@
 # DDM Client Behavior Defaults
 
-This document defines recommended client defaults. These rules guide sender and
-receiver behavior but do not change the wire protocol.
+This document defines recommended defaults for sender and receiver behavior.
 
 ## 1. Retry Profile
 
@@ -21,8 +20,7 @@ Recommended sender behavior:
    exact value for PoW difficulty calculation;
 8. write `expires_time = now + X + rand(0..jitter)`.
 
-Clients MAY increase proof-of-work cost on later retries, but the default
-profile does not require escalation.
+Clients MAY increase proof-of-work cost on later retries.
 
 TTL/expiry jitter helps reduce deanonymization risk from deterministic timing
 patterns. The same rules SHOULD be applied to explicitly configured and default
@@ -69,8 +67,8 @@ The source check is an optional preflight for large remote message-index trees.
 It protects a client from a source that advertises a large root only to force the
 client into revealing a narrow address prefix during partial synchronization.
 
-The default check uses 20 independent samples. Empty roots are accepted as a
-no-op, but clients normally SHOULD skip the check for an empty root.
+The default check uses 20 independent samples. Clients SHOULD skip the check
+for an empty root; checking an empty root succeeds without sampling.
 
 The client first reads the source root. For each sample, the client:
 

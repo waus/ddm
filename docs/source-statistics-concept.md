@@ -1,9 +1,10 @@
 # DDM Sync Source Concept
 
-This document defines the baseline transport-independent sync source concept.
+This document defines a transport-independent sync source model with one source
+and one receiver.
 
-The baseline model has one source and one receiver. It is intentionally a
-concept note, not a wire-format specification.
+See [Global Message Tree](message-tree.md) for snapshot lifetime, bidirectional
+reconciliation, shard coverage, and verification requirements.
 
 ## Core Idea
 
@@ -11,7 +12,7 @@ A source is any object that can provide:
 
 1. the current and future config timeline;
 2. messages by ID, where "message" means the encrypted transferable object
-   currently called a sync blob;
+   called a sync blob;
 3. enough index metadata for a client to decide what to synchronize next.
 
 A source may be an interactive node, a local replica, an exported database
@@ -19,7 +20,7 @@ file, removable media, or another transport-specific object store.
 
 ## Required Source Operations
 
-The baseline source contract has five operations:
+The source contract has five operations:
 
 ```
 GetConfigs() []ConfigRecord
@@ -52,8 +53,7 @@ succeeds.
   payload rules.
 
 `SyncBlobID`
-: A typed sync-blob identifier in canonical binary form. The current Go
-  implementation uses 36 bytes.
+: A 36-byte typed sync-blob identifier in canonical binary form.
 
 `SyncBlob`
 : An encrypted transferable synchronization object with two fields:
@@ -69,8 +69,7 @@ succeeds.
   as the logical key space for the message index.
 
 `MessageIndexNodeID`
-: A structural message-index node reference hash. The current Go
-  implementation uses a canonical SHA-256-based 32-byte identifier.
+: A 32-byte SHA-256 structural message-index node reference hash.
 
 ## Message Index
 
@@ -110,14 +109,12 @@ prefix or range to synchronize without reading every message first.
 
 ## Boundary
 
-DDM does not define one universal sync-source wire format.
-
-Transport-specific documents may choose their own:
+Transport-specific documents define:
 
 1. request and response encoding;
 2. snapshot identity format;
-3. proof, hash, or diff scheme;
+3. proof packaging and diff request flow consistent with shared tree semantics;
 4. follow-up query flow.
 
-The shared requirement is only the conceptual source model and the baseline
+The shared requirement is only the source model and the
 operations above.
