@@ -43,11 +43,15 @@ Semantics:
 4. `GetMessageIndexNode` returns one message-index node by explicit structural
    node ID.
 5. `Push` transfers a blob. The sender validates blobs before export; receiving
-   nodes validate blobs before insertion. Fixed-store adapters persist validated
-   exports.
+   nodes validate blobs and require their stream to match current maintained
+   coverage before import. Out-of-coverage pushes return unavailable, with no
+   rating penalty or ban. Fixed-store adapters persist validated exports across
+   all streams.
 6. `GetSyncState` returns a root snapshot and maintained ranges. An empty
-   coverage list serves no range; the prefix `""` covers every stream. A covered
-   range without leaves is empty. Missing snapshot nodes are unavailable.
+   coverage list maintains no range; the prefix `""` covers every stream. A covered
+   range without leaves is empty. The root also includes available blobs outside
+   coverage. Pulls follow local ranges; exports follow destination coverage.
+   Missing snapshot nodes are unavailable.
 
 Returned config remains untrusted until signature and metadata validation
 succeeds.

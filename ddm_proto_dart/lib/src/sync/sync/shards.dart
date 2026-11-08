@@ -40,9 +40,6 @@ final class ShardPolicy {
     final observedAt = _nowUtc();
     var streams = _receiverStreams();
     final root = state.root;
-    if (root != null && _sourceCheckSubtreeSize(root) > targetLeaves) {
-      await checkSource(source: source, validateBlob: validate, snapshot: root);
-    }
     final next = <int, StreamPrefix>{};
     for (final stream in streams) {
       final key = stream.toHex();
@@ -64,6 +61,12 @@ final class ShardPolicy {
         node = children[int.parse(key[common], radix: 16)];
       }
       next[stream.toUint32()] = StreamPrefix(key.substring(0, depth));
+    }
+    if (!local &&
+        _receiverStreams().any((stream) =>
+            (next[stream.toUint32()]?.value.length ?? minSplit) >
+            (_selections[stream.toUint32()]?.value.length ?? minSplit))) {
+      await checkSource(source: source, validateBlob: validate, snapshot: root);
     }
     // Account membership may change while a snapshot is being checked.
     streams = _receiverStreams();

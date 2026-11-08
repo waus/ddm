@@ -75,11 +75,16 @@ final class LocalSyncSource
     if (validated.id != blob.id) {
       throw const FormatException('sync blob ID does not match payload');
     }
+    if (!shards.coverage
+        .any((prefix) => prefix.matches(validated.encrypted.streamNumber))) {
+      throw const SyncSourceException.unavailable(
+          'stream outside maintained coverage');
+    }
     await _storeValidatedBlob(blob, validated.encrypted);
   }
 
   @override
-  Future<void> _storeValidatedBlob(
+  Future<bool> _storeValidatedBlob(
       SyncBlob blob, EncryptedMessage encrypted) async {
     await _onImportedBlob?.call(encrypted);
 
@@ -91,9 +96,10 @@ final class LocalSyncSource
     );
     final inserted = _blobs.insertSyncBlob(record);
     if (!inserted) {
-      return;
+      return false;
     }
     index.add(record.blobId, record.expiresAt);
+    return true;
   }
 
   @override

@@ -233,6 +233,10 @@ void main() {
       ),
     );
     expect(sourceB.pushed, hasLength(1));
+    sourceB.pushUnavailable = true;
+    await expectLater(
+        peer.push(blob), throwsA(predicate(isSyncSourceUnavailableError)));
+    expect(sourceB.pushed, hasLength(1));
   }, timeout: const Timeout(Duration(seconds: 30)));
 }
 
@@ -329,6 +333,7 @@ final class _MemorySyncSource implements SyncSource {
   final Map<SyncBlobId, SyncBlob> blobs = <SyncBlobId, SyncBlob>{};
   final Map<MessageIndexNodeId, MessageIndexNode> nodes =
       <MessageIndexNodeId, MessageIndexNode>{};
+  bool pushUnavailable = false;
   final List<SyncBlob> pushed = <SyncBlob>[];
   MessageIndexNode? root;
 
@@ -355,6 +360,10 @@ final class _MemorySyncSource implements SyncSource {
 
   @override
   Future<void> push(SyncBlob blob) async {
+    if (pushUnavailable) {
+      throw const SyncSourceException.unavailable(
+          'stream outside maintained coverage');
+    }
     pushed.add(blob);
   }
 

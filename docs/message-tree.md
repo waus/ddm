@@ -85,14 +85,43 @@ blob MUST NOT be imported, even when it belongs to a retained snapshot.
    zero to eight lowercase hexadecimal nibbles; `""` covers all streams and an
    empty list offers no maintained range. The root includes every retained live
    blob, including outgoing blobs outside the maintained ranges.
-2. Select intersections of local and remote maintained ranges for ordinary
-   node-to-node synchronization.
-3. Compare matching ranges. Skip equal hashes; recursively compare differing
-   branches by prefix, accounting for compressed paths.
-4. Fetch missing blobs and validate before insertion. Each peer retains its
-   valid local blobs when the other peer lacks them.
-5. Repeat with fresh roots. A collected snapshot ends the walk; the next round
-   starts from the latest root.
+2. Capture the local root and compare the union of local pull ranges and remote
+   export ranges in a single bidirectional walk. Pull ranges apply to every
+   source, including sources with disjoint advertised coverage.
+3. Skip equal hashes and align compressed paths before comparing differing
+   branches. Validate and import missing blobs within local ranges; export
+   missing blobs within the peer's ranges. Fixed stores receive all local blobs.
+4. Retain valid local blobs when the peer lacks them. Cache successful comparisons
+   and repeat with fresh snapshots. A collected snapshot ends the walk; the next
+   round starts from the latest root.
+
+Compare captured local and remote subtrees in one bidirectional walk. Equal
+hashes skip a subtree. Align compressed paths before comparing child slots.
+Import remote-only leaves within local coverage and export local-only leaves
+within the destination coverage; fixed stores receive all local ranges.
+
+Keep one in-memory checkpoint per source and compared range: both snapshot
+hashes (including absent subtrees), local pull coverage, and destination push
+coverage. Record it only after the entire exchange succeeds. An unchanged pair
+and unchanged coverages skip traversal. A changed local hash triggers comparison
+even if the remote hash stays the same. Failed exchanges remain eligible for
+retry, while already imported blobs remain stored.
+
+Checkpoints describe the captured snapshots. Concurrent changes and changes
+caused by the exchange appear in subsequent snapshots and require another
+comparison. Drop entries for inactive ranges; checkpoints belong to the local
+replica lifetime.
+
+A receiving node checks each incoming push against its current maintained
+coverage after blob validation and before import callbacks or storage. A stream
+outside coverage is rejected as unavailable (HTTP 503 / RPC unavailable).
+This rejection carries no rating penalty or ban and does not acknowledge
+delivery. Coverage may change after the sender reads it. Fixed stores accept
+exports across all streams.
+
+Coverage guides exports and shard discovery. Pulls can retrieve any available
+blob within local selected ranges. Source rating increases for each newly
+inserted received blob. Duplicate blobs and exports earn no increase.
 
 Each account independently selects a range containing its receiver stream.
 Selection starts at `minSplit`. While the observed leaf count exceeds the
@@ -121,7 +150,11 @@ before applying results of an asynchronous walk.
 
 Between reassessments, higher observed density can narrow coverage immediately.
 The background loop performs reassessment when due, including when no remote
-sources are reachable. Sampling precedes narrowing based on remote density.
+sources are reachable. Local density is read from the validated index without
+sampling. For a remote snapshot, first calculate candidate depths from branch
+counts. Sample that snapshot only if a candidate would narrow an account's
+current selection, and apply the narrowing only after verification succeeds.
+Unchanged or wider candidates require no sampling.
 Partial observations provide lower bounds on network population, so expansion
 is provisional: subsequent observations can immediately narrow the range again.
 

@@ -218,6 +218,16 @@ void main() {
         _MemorySyncSource(index: index, blobs: {a.id: a.blob, b.id: b.blob});
     final policy = ShardPolicy(
         targetLeaves: 1, streams: () => [const StreamId(0x10000000)]);
+    final localPolicy = ShardPolicy(
+        targetLeaves: 1, streams: () => [const StreamId(0x10000000)]);
+    final local = _MemorySyncSource(index: index);
+    await localPolicy.select(
+        local,
+        await readSyncState(local),
+        (_) =>
+            throw StateError('local selection must not validate sampled blobs'),
+        local: true);
+    expect(localPolicy.coverage, [StreamPrefix('1')]);
     var checks = 0;
     await policy.select(remote, await readSyncState(remote), (payload) {
       checks++;
@@ -230,6 +240,12 @@ void main() {
     expect(checks, sourceCheckSampleCount);
     expect(policy.coverage, [StreamPrefix('1')]);
     expect(remote.rootLookups, 1);
+    await policy.select(
+        remote,
+        await readSyncState(remote),
+        (_) =>
+            throw StateError('unchanged coverage must not trigger sampling'));
+    expect(policy.coverage, [StreamPrefix('1')]);
   });
 
   test('outgoing queue persists retries and deduplicates peers', () async {
@@ -291,7 +307,7 @@ void main() {
   });
 
   test(
-      'routed coverage filters sync while fixed storage accepts all local blobs',
+      'routed coverage selects exports while fixed storage accepts all local blobs',
       () async {
     final now = DateTime.utc(2026, 5, 1);
     final storage = _openStorage(nowUtc: () => now);
@@ -333,13 +349,295 @@ void main() {
             syncSourceFlagWritable |
             syncSourceFlagRouted));
     await service.importFrom(source: routed);
-    expect(routed.pushed, isEmpty);
+    expect(routed.pushed.single.id, fixture.id);
     final fixed = _MemorySyncSource(
         index: BlobIndex(nowUtc: () => now),
         flags: const SyncSourceFlags(
             syncSourceFlagSupportTree | syncSourceFlagWritable));
     await service.importFrom(source: fixed, prefix: '1');
     expect(fixed.pushed.single.id, fixture.id);
+  });
+
+  test('reconciliation caches snapshot pairs and retries failed exchanges',
+      () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+    final configs = _configs(storage, now);
+    final service = SyncService(
+        blobs: storage.syncBlobs,
+        configs: configs,
+        validateBlob: _validator(configs, _unix(now)),
+        nowUtc: () => now);
+    addTearDown(service.close);
+    final fixtures = [
+      for (final stream in [
+        0x11000000,
+        0x12000000,
+        0x13000000,
+        0x20000000,
+        0x21000000,
+        0x14000000
+      ])
+        _buildPowBlob(
+            streamId: StreamId(stream),
+            ttl: 3600,
+            expiresTime: _unix(now) + 3600)
+    ];
+    await service.localSource.push(fixtures[2].blob);
+    final remote = _MemorySyncSource(
+        index: BlobIndex(nowUtc: () => now),
+        coverage: [StreamPrefix('2')],
+        flags: const SyncSourceFlags(syncSourceFlagSupportTree |
+            syncSourceFlagWritable |
+            syncSourceFlagRouted));
+    for (final f in [fixtures[0], fixtures[1], fixtures[3]]) {
+      remote.index.add(f.id, f.encrypted.expiresTime);
+      remote._blobs[f.id] = f.blob;
+    }
+    final source =
+        RegisteredSource(source: remote, createdAt: now, rating: ratingDefault);
+    expect(await service.importFrom(source: source, prefix: '1'), 2);
+    expect(source.rating,
+        closeTo(ratingDefault + 2 * ratingGoodBlobReceived, 1e-9));
+    expect(remote.pushed, isEmpty);
+    final subtree = remote.index.latestRoot().node.branch!.childrenIds[1]!;
+    final children = remote.index
+        .node(subtree)!
+        .branch!
+        .childrenIds
+        .whereType<MessageIndexNodeId>()
+        .toSet();
+
+    Future<void> expectCached() async {
+      remote.nodeLookups.clear();
+      expect(await service.importFrom(source: source, prefix: '1'), 0);
+      expect(remote.nodeLookups.where(children.contains), isEmpty);
+    }
+
+    await service.importFrom(source: source, prefix: '1');
+    await expectCached();
+    await remote.push(fixtures[4].blob);
+    await expectCached();
+
+    final next = fixtures[5];
+    remote.index.add(next.id, next.encrypted.expiresTime);
+    await expectLater(service.importFrom(source: source, prefix: '1'),
+        throwsA(isA<SyncSourceException>()));
+    remote._blobs[next.id] = next.blob;
+    await service.localSource.push(fixtures[4].blob);
+    // A failed exchange must remain eligible for retry.
+    remote.coverage = [StreamPrefix('1')];
+    remote.failPush = true;
+    await expectLater(
+        service.importFrom(source: source, prefix: '1'), throwsStateError);
+
+    remote.coverage = [StreamPrefix('2')];
+    await service.importFrom(source: source, prefix: '1');
+    await service.importFrom(source: source, prefix: '1');
+    await expectCached();
+    remote.coverage = [StreamPrefix('1')];
+    remote.failPush = false;
+    await service.importFrom(source: source, prefix: '1');
+    expect(source.rating,
+        closeTo(ratingDefault + 3 * ratingGoodBlobReceived, 1e-9));
+    expect(
+        await importLeaf(
+            leaf: MessageIndexLeaf(
+                syncBlobId: next.id, ttl: next.encrypted.expiresTime),
+            from: source,
+            to: service.localSource,
+            validateBlob: _validator(configs, _unix(now))),
+        isFalse);
+    expect(source.rating,
+        closeTo(ratingDefault + 3 * ratingGoodBlobReceived, 1e-9));
+  });
+
+  for (final streams in [
+    [0x10000000, 0x11000000, 0x20000000],
+    [0x10000000, 0x10000000, 0x10000000],
+    [0x12345678, 0x12345679, 0x12345670],
+  ]) {
+    for (final reverse in [false, true]) {
+      test('bidirectional compressed paths $streams reverse=$reverse',
+          () async {
+        final now = DateTime.utc(2026, 5, 1);
+        final storage = _openStorage(nowUtc: () => now);
+        addTearDown(storage.close);
+        final configs = _configs(storage, now);
+        final service = SyncService(
+            blobs: storage.syncBlobs,
+            configs: configs,
+            validateBlob: _validator(configs, _unix(now)),
+            nowUtc: () => now);
+        addTearDown(service.close);
+        final fixtures = [
+          for (var i = 0; i < streams.length; i++)
+            _buildPowBlob(
+                streamId: StreamId(streams[i]),
+                ttl: 3600,
+                expiresTime: _unix(now) + 1800 + i)
+        ];
+        final left = reverse ? fixtures.skip(1) : fixtures.take(1);
+        final right = reverse ? fixtures.take(1) : fixtures.skip(1);
+        for (final f in left) {
+          await service.localSource.push(f.blob);
+        }
+        final remote = _MemorySyncSource(
+            index: BlobIndex(nowUtc: () => now),
+            flags: const SyncSourceFlags(syncSourceFlagSupportTree |
+                syncSourceFlagWritable |
+                syncSourceFlagRouted));
+        for (final f in right) {
+          remote.index.add(f.id, f.encrypted.expiresTime);
+          remote._blobs[f.id] = f.blob;
+        }
+        expect(await service.importFrom(source: remote), right.length);
+        expect(remote.pushed.length, left.length);
+        expect(service.totalSyncedMessages, fixtures.length);
+        expect(remote._blobs.length, fixtures.length);
+        await service.importFrom(source: remote);
+        remote.nodeLookups.clear();
+        expect(await service.importFrom(source: remote), 0);
+        expect(remote.nodeLookups, isEmpty);
+        final next = _buildPowBlob(
+            streamId: const StreamId(0x30000000),
+            ttl: 3600,
+            expiresTime: _unix(now) + 1800);
+        remote.coverage = [StreamPrefix('1')];
+        await service.localSource.push(next.blob);
+        await service.importFrom(source: remote);
+        expect(remote._blobs.containsKey(next.id), isFalse);
+        remote.coverage = [StreamPrefix('')];
+        await service.importFrom(source: remote);
+        expect(remote._blobs.containsKey(next.id), isTrue);
+      });
+    }
+  }
+
+  for (final push in [false, true]) {
+    test('reconciliation checks live destination after snapshot push=$push',
+        () async {
+      final now = DateTime.utc(2026, 5, 1);
+      final storage = _openStorage(nowUtc: () => now);
+      addTearDown(storage.close);
+      final configs = _configs(storage, now);
+      final validate = _validator(configs, _unix(now));
+      var validations = 0;
+      final service = SyncService(
+          blobs: storage.syncBlobs,
+          configs: configs,
+          validateBlob: (payload) {
+            validations++;
+            return validate(payload);
+          },
+          nowUtc: () => now);
+      addTearDown(service.close);
+      final fixtures = [
+        for (final stream in [0x11000000, 0x12000000])
+          _buildPowBlob(
+              streamId: StreamId(stream),
+              ttl: 3600,
+              expiresTime: _unix(now) + 1800)
+      ];
+      var injected = false;
+      late final _MemorySyncSource remote;
+      remote = _MemorySyncSource(
+          index: BlobIndex(nowUtc: () => now),
+          flags: const SyncSourceFlags(syncSourceFlagSupportTree |
+              syncSourceFlagWritable |
+              syncSourceFlagRouted),
+          beforeNodeLookup: () async {
+            if (injected) return;
+            injected = true;
+            for (final f in fixtures) {
+              if (push) {
+                remote.index.add(f.id, f.encrypted.expiresTime);
+                remote._blobs[f.id] = f.blob;
+              } else {
+                await service.localSource.push(f.blob);
+              }
+            }
+            validations = 0;
+          });
+      for (final f in fixtures) {
+        if (push) {
+          await service.localSource.push(f.blob);
+        } else {
+          remote.index.add(f.id, f.encrypted.expiresTime);
+          remote._blobs[f.id] = f.blob;
+        }
+      }
+      validations = 0;
+      expect(await service.importFrom(source: remote), 0);
+      expect(injected, isTrue);
+      expect(validations, 0);
+      expect(remote.blobLookups, isEmpty);
+      expect(remote.pushed, isEmpty);
+      expect(service.totalSyncedMessages, fixtures.length);
+    });
+  }
+
+  test('push checks current multi-account coverage before import', () async {
+    final now = DateTime.utc(2026, 5, 1);
+    final storage = _openStorage(nowUtc: () => now);
+    addTearDown(storage.close);
+    final configs = _configs(storage, now);
+    final validate = _validator(configs, _unix(now));
+    final streams = [const StreamId(0x11000000), const StreamId(0x22000000)];
+    final policy =
+        ShardPolicy(targetLeaves: 1, streams: () => streams, nowUtc: () => now);
+    var callbacks = 0;
+    final local = LocalSyncSource(
+        blobs: storage.syncBlobs,
+        configs: () => [],
+        validateBlob: validate,
+        nowUtc: () => now,
+        shards: policy,
+        onImportedBlob: (_) {
+          callbacks++;
+        });
+    addTearDown(local.stop);
+    final fixtures = [
+      for (final stream in [0x11000000, 0x22000000, 0x33000000, 0x44000000])
+        _buildPowBlob(
+            streamId: StreamId(stream),
+            ttl: 3600,
+            expiresTime: _unix(now) + 3600)
+    ];
+    // Initial full coverage accepts every stream.
+    await local.push(fixtures[2].blob);
+    final remote = _MemorySyncSource(index: BlobIndex(nowUtc: () => now));
+    for (final f in fixtures) {
+      remote.index.add(f.id, f.encrypted.expiresTime);
+      remote._blobs[f.id] = f.blob;
+    }
+    await policy.select(remote, await readSyncState(remote), validate);
+    expect(policy.coverage, [StreamPrefix('1'), StreamPrefix('2')]);
+    await local.push(fixtures[0].blob);
+    await local.push(fixtures[1].blob);
+    expect(callbacks, 3);
+    for (final f in fixtures.skip(2)) {
+      await expectLater(
+          local.push(f.blob), throwsA(predicate(isSyncSourceUnavailableError)));
+    }
+    expect(callbacks, 3);
+    expect(storage.syncBlobs.getSyncBlobById(fixtures[3].id), isNull);
+    expect(local.index.totalBlobs, 3);
+    // Removing an account changes admission for the next push.
+    streams.removeAt(1);
+    await policy.select(remote, await readSyncState(remote), validate);
+    await expectLater(local.push(fixtures[1].blob),
+        throwsA(predicate(isSyncSourceUnavailableError)));
+    expect(callbacks, 3);
+    // Pull imports continue through the validated sink.
+    await importSnapshot(
+        prefix: '4',
+        node: remote.index.latestRoot().node,
+        from: remote,
+        to: local,
+        validateBlob: validate);
+    expect(storage.syncBlobs.getSyncBlobById(fixtures[3].id), isNotNull);
   });
 
   test('local source uses a memory store and validates direct pushes',
@@ -367,7 +665,7 @@ void main() {
       ..add(fixture.id, fixture.encrypted.expiresTime);
     final remote = _MemorySyncSource(
         index: remoteIndex, blobs: {fixture.id: fixture.blob});
-    await recursiveSync(
+    await importSnapshot(
         prefix: '',
         node: remoteIndex.latestRoot().node,
         from: remote,
@@ -437,7 +735,7 @@ void main() {
       final remote = _FixedTreeSource(
           root: root(lost ? 1 : 2), nodes: lost ? {} : {leaf.hash(): leaf});
       await expectLater(
-          recursiveSync(
+          importSnapshot(
               prefix: '',
               node: remote.root,
               from: remote,
@@ -601,7 +899,7 @@ void main() {
     expect(blobs[1], isNull);
   });
 
-  test('recursiveSync imports validated leaves into local source', () async {
+  test('importSnapshot imports validated leaves into local source', () async {
     final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
     addTearDown(storage.close);
@@ -629,7 +927,7 @@ void main() {
       validateBlob: _validator(configs, _unix(now)),
     );
 
-    final received = await recursiveSync(
+    final received = await importSnapshot(
       prefix: '',
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
@@ -642,7 +940,7 @@ void main() {
     expect(local.index.totalBlobs, 1);
     expect(storage.syncBlobs.getSyncBlobById(fixture.id), isNotNull);
 
-    final duplicateReceived = await recursiveSync(
+    final duplicateReceived = await importSnapshot(
       prefix: '',
       node: await remote.getMessageIndexRoot() as MessageIndexNode,
       from: remote,
@@ -734,7 +1032,7 @@ void main() {
     );
   });
 
-  test('recursiveSync does not store imported blob when callback fails',
+  test('importSnapshot does not store imported blob when callback fails',
       () async {
     final now = DateTime.utc(2026, 5, 1, 10, 0, 0);
     final storage = _openStorage(nowUtc: () => now);
@@ -763,7 +1061,7 @@ void main() {
     );
 
     await expectLater(
-      recursiveSync(
+      importSnapshot(
         prefix: '',
         node: await remote.getMessageIndexRoot() as MessageIndexNode,
         from: remote,
@@ -1163,6 +1461,9 @@ final class _MemorySyncSource
   final Map<SyncBlobId, SyncBlob> _blobs;
   final List<SyncBlob> pushed = <SyncBlob>[];
   int rootLookups = 0;
+  final blobLookups = <SyncBlobId>[];
+  final nodeLookups = <MessageIndexNodeId>[];
+  bool failPush = false;
 
   @override
   Future<List<ConfigRecord>> getConfigs() async {
@@ -1171,6 +1472,7 @@ final class _MemorySyncSource
 
   @override
   Future<MessageIndexNode?> getMessageIndexNode(MessageIndexNodeId id) async {
+    nodeLookups.add(id);
     await beforeNodeLookup?.call();
     return index.node(id);
   }
@@ -1186,11 +1488,13 @@ final class _MemorySyncSource
 
   @override
   Future<List<SyncBlob?>> getSyncBlobs(List<SyncBlobId> ids) async {
+    blobLookups.addAll(ids);
     return ids.map((id) => _blobs[id]).toList(growable: false);
   }
 
   @override
   Future<void> push(SyncBlob blob) async {
+    if (failPush) throw StateError("push failed");
     pushed.add(blob);
     _blobs[blob.id] = blob;
     index.add(

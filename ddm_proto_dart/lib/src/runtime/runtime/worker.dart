@@ -139,12 +139,9 @@ final class RuntimeWorker {
       for (final source in _core.transports.sources.getActive(10)) {
         if (!source.flags.has(syncSourceFlagSupportTree)) continue;
         try {
-          final received = await _core.sync.importFrom(
+          await _core.sync.importFrom(
             source: source,
           );
-          if (received > 0) {
-            source.increaseRatingConst(ratingGoodBlobReceived * received);
-          }
         } catch (error) {
           if (!isSyncSourceUnavailableError(error)) {
             source.decreaseRatingMul(ratingReceivedSomethingStrange);

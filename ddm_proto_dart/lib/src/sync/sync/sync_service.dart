@@ -24,6 +24,7 @@ final class SyncService {
   final BlobValidator _validateBlob;
   final ConfigManager _configs;
   final LocalSyncSource localSource;
+  final _reconciled = Expando<Map<StreamPrefix, _SyncCheckpoint>>();
 
   int get totalSyncedMessages => localSource.index.totalBlobs;
 
@@ -42,30 +43,38 @@ final class SyncService {
     await refreshCoverage();
     final state = await readSyncState(source);
     await localSource.shards.select(source, state, _validateBlob);
-    var ranges = intersectCoverage(localSource.shards.coverage, state.coverage);
-    ranges = intersectCoverage(ranges, [StreamPrefix(normalizedPrefix)]);
+    final pull = intersectCoverage(
+        localSource.shards.coverage, [StreamPrefix(normalizedPrefix)]);
+    final push = source.flags.has(syncSourceFlagWritable)
+        ? (source.flags.has(syncSourceFlagRouted)
+            ? state.coverage
+            : [StreamPrefix('')])
+        : <StreamPrefix>[];
+    final ranges = normalizeCoverage([...pull, ...push]);
+    final cache = _reconciled[source] ??= {};
+    cache.removeWhere((prefix, _) => !ranges.contains(prefix));
+    final root = await localSource.getMessageIndexRoot();
     var imported = 0;
     for (final p in ranges) {
-      if (state.root != null) {
-        imported += await recursiveSync(
-            prefix: p.value,
-            node: state.root!,
-            from: source,
-            to: localSource,
-            validateBlob: _validateBlob);
+      final left = await _syncSubtree(localSource, root, p.value);
+      final right = await _syncSubtree(source, state.root, p.value);
+      final checkpoint = (
+        local: left?.hash(),
+        remote: right?.hash(),
+        pull: intersectCoverage(pull, [p]),
+        push: intersectCoverage(push, [p]),
+      );
+      final cached = cache[p];
+      if (cached != null &&
+          cached.local == checkpoint.local &&
+          cached.remote == checkpoint.remote &&
+          _sameCoverage(cached.pull, checkpoint.pull) &&
+          _sameCoverage(cached.push, checkpoint.push)) {
+        continue;
       }
-    }
-    if (source.flags.has(syncSourceFlagWritable)) {
-      if (!source.flags.has(syncSourceFlagRouted)) ranges = [StreamPrefix('')];
-      final root = await localSource.getMessageIndexRoot();
-      for (final p in ranges) {
-        await recursiveSync(
-            prefix: p.value,
-            node: root,
-            from: localSource,
-            to: source,
-            validateBlob: _validateBlob);
-      }
+      imported += await _reconcile(left, right, localSource, source,
+          checkpoint.pull, checkpoint.push, _validateBlob);
+      cache[p] = checkpoint;
     }
     return imported;
   }

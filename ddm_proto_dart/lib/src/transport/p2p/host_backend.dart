@@ -970,9 +970,13 @@ final class DartLibp2pHostBackend implements P2pHostBackend, ShardDiscovery {
           'rpc inbound internal error remote_peer=$remotePeer error=$error');
       await _tryWriteRpcFrame(
         stream,
-        const RpcResponse(
-          status: rpcStatusInternal,
-          error: 'internal server error',
+        RpcResponse(
+          status: isSyncSourceUnavailableError(error)
+              ? rpcStatusUnavailable
+              : rpcStatusInternal,
+          error: isSyncSourceUnavailableError(error)
+              ? error.toString()
+              : 'internal server error',
           peers: null,
           configs: null,
           blobs: null,

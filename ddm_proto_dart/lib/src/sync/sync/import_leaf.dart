@@ -41,8 +41,12 @@ Future<bool> importLeaf({
     );
   }
   if (to is _ValidatedBlobSink) {
-    await (to as _ValidatedBlobSink)
+    final inserted = await (to as _ValidatedBlobSink)
         ._storeValidatedBlob(blob, validated.encrypted);
+    if (inserted && from is RegisteredSource) {
+      from.increaseRatingConst(ratingGoodBlobReceived);
+    }
+    return inserted;
   } else {
     await to.push(blob);
   }
@@ -50,5 +54,5 @@ Future<bool> importLeaf({
 }
 
 abstract interface class _ValidatedBlobSink {
-  Future<void> _storeValidatedBlob(SyncBlob blob, EncryptedMessage encrypted);
+  Future<bool> _storeValidatedBlob(SyncBlob blob, EncryptedMessage encrypted);
 }
